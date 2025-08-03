@@ -37,7 +37,20 @@ services:
     volumes:
       - kafka-data:/var/lib/kafka/data
 
+  timescaledb:
+    image: timescale/timescaledb:2.14.2-pg15
+    container_name: timescaledb
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: stocks
+    ports:
+      - "5432:5432"
+    volumes:
+      - timescale-data:/var/lib/postgresql/data
+
 volumes:
   zookeeper-data:
   zookeeper-logs:
-  kafka-data: 
+  kafka-data:
+  timescale-data: 

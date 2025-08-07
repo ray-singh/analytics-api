@@ -247,8 +247,10 @@ class ETLPipeline:
         try:
             insert_analytics(
                 analytics_event.symbol,
+                analytics_event.analytics_type,
                 analytics_event.value,
-                analytics_event.timestamp.timestamp()
+                analytics_event.timestamp.timestamp(),
+                metadata=analytics_event.metadata
             )
             logger.debug(f"Loaded analytics data for {analytics_event.symbol}")
         except Exception as e:

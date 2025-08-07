@@ -2,7 +2,7 @@ import asyncio
 import json
 import random
 from aiokafka import AIOKafkaProducer
-from datetime import datetime
+from datetime import datetime, timezone
 from db import insert_price
 
 KAFKA_TOPIC = "stock_prices"
@@ -16,14 +16,14 @@ async def produce_stock_prices():
         while True:
             for symbol in SYMBOLS:
                 price = round(random.uniform(100, 300), 2)
-                timestamp = datetime.utcnow().timestamp()
+                timestamp = datetime.now(timezone.utc).timestamp()
                 event = {
                     "symbol": symbol,
                     "price": price,
                     "timestamp": timestamp
                 }
                 await producer.send_and_wait(KAFKA_TOPIC, json.dumps(event).encode())
-                insert_price(symbol, price, timestamp)
+                insert_price(symbol, price, timestamp, volume=None)
                 print(f"Produced: {event}")
             await asyncio.sleep(1)
     finally:

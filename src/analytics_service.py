@@ -35,7 +35,7 @@ async def consume_and_analyze():
                     "timestamp": timestamp
                 }
                 await producer.send_and_wait(KAFKA_TOPIC_OUT, json.dumps(analytics_event).encode())
-                insert_analytics(symbol, moving_avg, timestamp)
+                insert_analytics(symbol, "moving_average", moving_avg, timestamp, window_size=WINDOW_SIZE)
                 print(f"Published analytics: {analytics_event}")
     finally:
         await consumer.stop()

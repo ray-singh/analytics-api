@@ -3,4 +3,5 @@ uvicorn
 aiokafka
 pydantic
 psycopg2-binary
+asyncpg
 numpy

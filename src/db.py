@@ -49,18 +49,35 @@ def init_db():
     # Create tables
     try:
         print("Creating tables...")
+        
+        # Replace generic analytics table with specialized tables
         cur.execute('''
-            CREATE TABLE IF NOT EXISTS analytics (
-                id SERIAL PRIMARY KEY,
+            CREATE TABLE IF NOT EXISTS intraday_analytics (
                 symbol TEXT NOT NULL,
-                analytics_type TEXT NOT NULL,
-                value DOUBLE PRECISION NOT NULL,
-                window_size INTEGER,
                 timestamp TIMESTAMPTZ NOT NULL,
-                metadata JSONB,
-                created_at TIMESTAMPTZ DEFAULT NOW()
+                interval_minutes INTEGER NOT NULL DEFAULT 5,
+                sma_20 DOUBLE PRECISION,
+                ema_50 DOUBLE PRECISION,
+                rsi_14 DOUBLE PRECISION,
+                macd DOUBLE PRECISION,
+                bollinger_upper DOUBLE PRECISION,
+                bollinger_lower DOUBLE PRECISION,
             );
         ''')
+        
+        cur.execute('''
+            CREATE TABLE IF NOT EXISTS daily_analytics (
+                symbol TEXT NOT NULL,
+                date DATE NOT NULL,
+                sma_20 DOUBLE PRECISION,
+                ema_50 DOUBLE PRECISION,
+                rsi_14 DOUBLE PRECISION,
+                macd DOUBLE PRECISION,
+                bollinger_upper DOUBLE PRECISION,
+                bollinger_lower DOUBLE PRECISION,
+            );
+        ''')
+        
         cur.execute('''
             CREATE TABLE IF NOT EXISTS data_quality_issues (
                 id SERIAL PRIMARY KEY,
@@ -91,10 +108,16 @@ def init_db():
 
     # Create TimescaleDB hypertables
     try:
-        print("Creating hypertable for analytics...")
-        cur.execute("ALTER TABLE analytics DROP CONSTRAINT IF EXISTS analytics_pkey;")
-        cur.execute("ALTER TABLE analytics ADD PRIMARY KEY (id, timestamp);")
-        cur.execute("SELECT create_hypertable('analytics', 'timestamp', if_not_exists => TRUE);")
+        print("Creating hypertables for intraday analytics...")
+        cur.execute("ALTER TABLE intraday_analytics DROP CONSTRAINT IF EXISTS intraday_analytics_pkey;")
+        cur.execute("ALTER TABLE intraday_analytics ADD PRIMARY KEY (symbol, timestamp, interval_minutes);")
+        cur.execute("SELECT create_hypertable('intraday_analytics', 'timestamp', if_not_exists => TRUE, chunk_time_interval => interval '7 days');")
+        
+        # Create hypertable for daily_analytics
+        print("Creating hypertable for daily_analytics...")
+        cur.execute("ALTER TABLE daily_analytics DROP CONSTRAINT IF EXISTS daily_analytics_pkey;")
+        cur.execute("ALTER TABLE daily_analytics ADD PRIMARY KEY (symbol, date);")
+        cur.execute("SELECT create_hypertable('daily_analytics', 'date', if_not_exists => TRUE, chunk_time_interval => interval '1 month');")
 
         print("Creating hypertable for data_quality_issues...")
         cur.execute("ALTER TABLE data_quality_issues DROP CONSTRAINT IF EXISTS data_quality_issues_pkey;")
@@ -110,7 +133,8 @@ def init_db():
     try:
         print("Creating indexes...")
         cur.execute('''
-            CREATE INDEX IF NOT EXISTS idx_analytics_symbol_type_timestamp ON analytics(symbol, analytics_type, timestamp DESC);
+            CREATE INDEX IF NOT EXISTS idx_intraday_analytics_symbol ON intraday_analytics(symbol);
+            CREATE INDEX IF NOT EXISTS idx_daily_analytics_symbol ON daily_analytics(symbol);
             CREATE INDEX IF NOT EXISTS idx_dq_issues_symbol_severity ON data_quality_issues(symbol, severity);
         ''')
         conn.commit()
@@ -271,89 +295,6 @@ def insert_data_quality_issue(symbol, issue_type, description, severity, timesta
     conn.commit()
     cur.close()
     conn.close()
-
-def get_latest_analytics(symbol, analytics_type=None):
-    """
-    Get the most recent analytics for a given symbol.
-    
-    Args:
-        symbol (str): Stock symbol to query
-        analytics_type (str, optional): Specific analytics type to filter by
-        
-    Returns:
-        dict or None: Latest analytics record as dictionary, or None if not found
-    """
-    conn = get_conn()
-    cur = conn.cursor(cursor_factory=RealDictCursor)
-    
-    if analytics_type:
-        cur.execute(
-            "SELECT * FROM analytics WHERE symbol=%s AND analytics_type=%s ORDER BY timestamp DESC LIMIT 1",
-            (symbol, analytics_type)
-        )
-    else:
-        cur.execute(
-            "SELECT * FROM analytics WHERE symbol=%s ORDER BY timestamp DESC LIMIT 1",
-            (symbol,)
-        )
-    
-    row = cur.fetchone()
-    cur.close()
-    conn.close()
-    return row
-
-def get_analytics_history(symbol, analytics_type=None, limit=100):
-    """
-    Get historical analytics for a given symbol.
-    
-    Args:
-        symbol (str): Stock symbol to query
-        analytics_type (str, optional): Specific analytics type to filter by
-        limit (int): Maximum number of records to return (default: 100)
-        
-    Returns:
-        list: List of analytics records as dictionaries, ordered by timestamp DESC
-    """
-    conn = get_conn()
-    cur = conn.cursor(cursor_factory=RealDictCursor)
-    
-    if analytics_type:
-        cur.execute(
-            "SELECT * FROM analytics WHERE symbol=%s AND analytics_type=%s ORDER BY timestamp DESC LIMIT %s",
-            (symbol, analytics_type, limit)
-        )
-    else:
-        cur.execute(
-            "SELECT * FROM analytics WHERE symbol=%s ORDER BY timestamp DESC LIMIT %s",
-            (symbol, limit)
-        )
-    
-    rows = cur.fetchall()
-    cur.close()
-    conn.close()
-    return rows
-
-def get_price_history(symbol, limit=100):
-    """
-    Get historical price data for a given symbol.
-    
-    Args:
-        symbol (str): Stock symbol to query
-        limit (int): Maximum number of records to return (default: 100)
-        
-    Returns:
-        list: List of price records as dictionaries, ordered by timestamp DESC
-    """
-    conn = get_conn()
-    cur = conn.cursor(cursor_factory=RealDictCursor)
-    cur.execute(
-        "SELECT * FROM prices WHERE symbol=%s ORDER BY timestamp DESC LIMIT %s",
-        (symbol, limit)
-    )
-    rows = cur.fetchall()
-    cur.close()
-    conn.close()
-    return rows
 
 def get_data_quality_issues(symbol=None, severity=None, limit=100):
     """
@@ -524,6 +465,7 @@ def insert_realtime_price(symbol, price, timestamp, volume=None, source="TwelveD
             "INSERT INTO realtime_prices (symbol, price, volume, timestamp, source) VALUES (%s, %s, %s, to_timestamp(%s), %s)",
             (symbol, price, volume, timestamp, source)
         )
+        print(f"Inserted real-time price for {symbol} at {datetime.fromtimestamp(timestamp)}: {price}")
         conn.commit()
     except Exception as e:
         print(f"Error inserting real-time price: {e}")
@@ -654,6 +596,21 @@ def consolidate_realtime_to_intraday(symbol=None, older_than_minutes=15):
         # Get the cutoff timestamp
         cutoff_time = datetime.now() - timedelta(minutes=older_than_minutes)
         
+        # First, check if there's any data to consolidate
+        check_query = "SELECT COUNT(*) FROM realtime_prices WHERE timestamp < %s"
+        check_params = [cutoff_time]
+        
+        if symbol:
+            check_query += " AND symbol = %s"
+            check_params.append(symbol)
+            
+        cur.execute(check_query, check_params)
+        count = cur.fetchone()[0]
+        
+        if count == 0:
+            # No data to consolidate
+            return 0
+            
         # Find the time buckets that need to be consolidated
         query = """
         WITH time_buckets AS (
@@ -671,7 +628,7 @@ def consolidate_realtime_to_intraday(symbol=None, older_than_minutes=15):
                   date_trunc('minute', timestamp - 
                   (EXTRACT(MINUTE FROM timestamp)::integer % 5) * interval '1 minute')
                   ORDER BY timestamp ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) AS close,
-                SUM(volume) AS volume,
+                SUM(COALESCE(volume, 0)) AS volume,
                 COUNT(*) AS num_samples
             FROM realtime_prices
             WHERE timestamp < %s
@@ -705,22 +662,22 @@ def consolidate_realtime_to_intraday(symbol=None, older_than_minutes=15):
         consolidated = cur.fetchall()
         
         # Delete consolidated data from realtime table
-        if consolidated:
+        if consolidated and len(consolidated) > 0:
             # Build a query to delete the consolidated data
-            placeholders = ', '.join(['%s'] * len(consolidated))
-            symbols = [row[0] for row in consolidated]
-            timestamps = [row[1] for row in consolidated]
-            
-            # For each consolidated interval, delete the corresponding realtime data
-            for i in range(len(consolidated)):
-                symbol = consolidated[i][0]
-                interval_start = consolidated[i][1]
-                interval_end = interval_start + timedelta(minutes=5)
-                
-                cur.execute(
-                    "DELETE FROM realtime_prices WHERE symbol = %s AND timestamp >= %s AND timestamp < %s",
-                    (symbol, interval_start, interval_end)
-                )
+            try:
+                # For each consolidated interval, delete the corresponding realtime data
+                for i in range(len(consolidated)):
+                    symbol = consolidated[i][0]
+                    interval_start = consolidated[i][1]
+                    interval_end = interval_start + timedelta(minutes=5)
+                    
+                    cur.execute(
+                        "DELETE FROM realtime_prices WHERE symbol = %s AND timestamp >= %s AND timestamp < %s",
+                        (symbol, interval_start, interval_end)
+                    )
+            except Exception as e:
+                print(f"Error while deleting consolidated realtime data: {e}")
+                # Continue with commit anyway
                 
         conn.commit()
         return len(consolidated)
@@ -848,3 +805,201 @@ def clean_realtime_data(idle_minutes=60):
     finally:
         cur.close()
         conn.close()
+
+def insert_intraday_analytics(symbol, timestamp, interval_minutes=5, **indicators):
+    """
+    Insert technical indicators for intraday data.
+    
+    Args:
+        symbol (str): Stock symbol
+        timestamp (float or datetime): Timestamp for the indicators
+        interval_minutes (int): Time interval in minutes (default: 5)
+        **indicators: Key-value pairs of indicator names and values
+                      (e.g., sma_20=123.45, rsi_14=65.4)
+    """
+    if isinstance(timestamp, (int, float)):
+        timestamp = datetime.fromtimestamp(timestamp)
+    
+    conn = get_conn()
+    cur = conn.cursor()
+    
+    try:
+        # Build dynamic query with only the indicators that are provided
+        columns = ["symbol", "timestamp", "interval_minutes"]
+        values = [symbol, timestamp, interval_minutes]
+        placeholders = ["%s", "%s", "%s"]
+        
+        update_parts = []
+        
+        for indicator, value in indicators.items():
+            if value is not None:  # Only include non-None values
+                columns.append(indicator)
+                values.append(value)
+                placeholders.append("%s")
+                update_parts.append(f"{indicator} = EXCLUDED.{indicator}")
+        
+        # Build the query
+        query = f"""
+            INSERT INTO intraday_analytics ({', '.join(columns)})
+            VALUES ({', '.join(placeholders)})
+            ON CONFLICT (symbol, timestamp, interval_minutes)
+            DO UPDATE SET {', '.join(update_parts)}
+        """
+        
+        cur.execute(query, values)
+        conn.commit()
+    except Exception as e:
+        print(f"Error inserting intraday analytics: {e}")
+        conn.rollback()
+    finally:
+        cur.close()
+        conn.close()
+
+def insert_daily_analytics(symbol, date, **indicators):
+    """
+    Insert technical indicators for daily data.
+    
+    Args:
+        symbol (str): Stock symbol
+        date (date or str): Date for the indicators
+        **indicators: Key-value pairs of indicator names and values
+                      (e.g., sma_20=123.45, rsi_14=65.4)
+    """
+    # Convert string date to date object if needed
+    if isinstance(date, str):
+        date = datetime.strptime(date, "%Y-%m-%d").date()
+    elif isinstance(date, (int, float)):
+        date = datetime.fromtimestamp(date).date()
+    elif isinstance(date, datetime):
+        date = date.date()
+    
+    conn = get_conn()
+    cur = conn.cursor()
+    
+    try:
+        # Build dynamic query with only the indicators that are provided
+        columns = ["symbol", "date"]
+        values = [symbol, date]
+        placeholders = ["%s", "%s"]
+        
+        update_parts = []
+        
+        for indicator, value in indicators.items():
+            if value is not None:  # Only include non-None values
+                columns.append(indicator)
+                values.append(value)
+                placeholders.append("%s")
+                update_parts.append(f"{indicator} = EXCLUDED.{indicator}")
+        
+        # Build the query
+        query = f"""
+            INSERT INTO daily_analytics ({', '.join(columns)})
+            VALUES ({', '.join(placeholders)})
+            ON CONFLICT (symbol, date)
+            DO UPDATE SET {', '.join(update_parts)}
+        """
+        
+        cur.execute(query, values)
+        conn.commit()
+    except Exception as e:
+        print(f"Error inserting daily analytics: {e}")
+        conn.rollback()
+    finally:
+        cur.close()
+        conn.close()
+
+def get_intraday_analytics(symbol, start_timestamp=None, end_timestamp=None, interval_minutes=5, limit=100):
+    """
+    Get intraday analytics for a symbol within a time range.
+    
+    Args:
+        symbol (str): Stock symbol
+        start_timestamp (float or datetime, optional): Start of time range
+        end_timestamp (float or datetime, optional): End of time range
+        interval_minutes (int): Time interval in minutes
+        limit (int): Maximum number of records to return
+    
+    Returns:
+        list: List of analytics records
+    """
+    conn = get_conn()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    
+    # Convert timestamps if needed
+    if isinstance(start_timestamp, (int, float)):
+        start_timestamp = datetime.fromtimestamp(start_timestamp)
+    if isinstance(end_timestamp, (int, float)):
+        end_timestamp = datetime.fromtimestamp(end_timestamp)
+    
+    query = "SELECT * FROM intraday_analytics WHERE symbol = %s AND interval_minutes = %s"
+    params = [symbol, interval_minutes]
+    
+    if start_timestamp:
+        query += " AND timestamp >= %s"
+        params.append(start_timestamp)
+    
+    if end_timestamp:
+        query += " AND timestamp <= %s"
+        params.append(end_timestamp)
+    
+    query += " ORDER BY timestamp DESC LIMIT %s"
+    params.append(limit)
+    
+    cur.execute(query, params)
+    rows = cur.fetchall()
+    
+    cur.close()
+    conn.close()
+    return rows
+
+def get_daily_analytics(symbol, start_date=None, end_date=None, limit=100):
+    """
+    Get daily analytics for a symbol within a date range.
+    
+    Args:
+        symbol (str): Stock symbol
+        start_date (date, str or float, optional): Start date
+        end_date (date, str or float, optional): End date
+        limit (int): Maximum number of records to return
+    
+    Returns:
+        list: List of analytics records
+    """
+    conn = get_conn()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    
+    # Convert dates if needed
+    if isinstance(start_date, str):
+        start_date = datetime.strptime(start_date, "%Y-%m-%d").date()
+    elif isinstance(start_date, (int, float)):
+        start_date = datetime.fromtimestamp(start_date).date()
+    elif isinstance(start_date, datetime):
+        start_date = start_date.date()
+    
+    if isinstance(end_date, str):
+        end_date = datetime.strptime(end_date, "%Y-%m-%d").date()
+    elif isinstance(end_date, (int, float)):
+        end_date = datetime.fromtimestamp(end_date).date()
+    elif isinstance(end_date, datetime):
+        end_date = end_date.date()
+    
+    query = "SELECT * FROM daily_analytics WHERE symbol = %s"
+    params = [symbol]
+    
+    if start_date:
+        query += " AND date >= %s"
+        params.append(start_date)
+    
+    if end_date:
+        query += " AND date <= %s"
+        params.append(end_date)
+    
+    query += " ORDER BY date DESC LIMIT %s"
+    params.append(limit)
+    
+    cur.execute(query, params)
+    rows = cur.fetchall()
+    
+    cur.close()
+    conn.close()
+    return rows

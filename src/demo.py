@@ -16,14 +16,9 @@ def on_event(e):
 
 load_dotenv()
 td = TDClient(apikey=os.getenv("TWELVEDATA_API_KEY"))
-# Construct the necessary time series
-ts = td.time_series(
-    symbol="AAPL",
-    interval="1min",
-    outputsize=10,
-    timezone="America/New_York",
-)
-
-# Returns pandas.DataFrame
-ts.as_json()
-print(ts)
+ws = td.websocket(symbols="AAPL", on_event=on_event, ssl_context=ssl.create_default_context(cafile=certifi.where()))
+ws.subscribe('AAPL')
+ws.connect()
+while True:
+    ws.heartbeat()
+    time.sleep(10)

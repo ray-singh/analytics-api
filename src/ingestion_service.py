@@ -191,15 +191,18 @@ async def init_historical_data(symbols=["AAPL"], interval="5min", days_back=365)
         # Add a short delay between symbols
         await asyncio.sleep(5)
 
-async def subscribe_and_produce(symbol: str, fetch_history=False, interval="5min", days_back=365):
+async def subscribe_and_produce(symbol: str, fetch_history=False, interval="5min"):
     """
     Subscribe to real-time stock price updates and produce them to Kafka.
-    Optionally fetch historical data first.
+    Optionally fetch historical data first using smart backfill.
     """
-    # Fetch historical data if requested
+    # Smart backfill of historical data if requested
     if fetch_history:
-        print(f"Fetching historical data for {symbol} before starting real-time stream...")
-        await init_historical_data([symbol], interval, days_back)
+        print(f"Performing smart backfill for {symbol} before starting real-time stream...")
+        await smart_backfill(symbol, interval)
+    
+    # Start automatic consolidation task
+    consolidation_task = asyncio.create_task(scheduled_consolidation(symbol))
     
     # Set up real-time streaming
     producer = AIOKafkaProducer(bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS)
@@ -234,9 +237,9 @@ async def subscribe_and_produce(symbol: str, fetch_history=False, interval="5min
         insert_realtime_price(
             symbol = event["symbol"], 
             price = event["price"], 
-            timestamp=event["timestamp"], 
-            volume=event.get("day_volume", None),
-            source="TwelveData-RealTime"
+            timestamp = event["timestamp"], 
+            volume = event.get("day_volume", None), 
+            source = "TwelveData-Realtime"
         )
         
     ws = td.websocket(
@@ -252,9 +255,190 @@ async def subscribe_and_produce(symbol: str, fetch_history=False, interval="5min
             ws.heartbeat()  # Send a heartbeat to keep the connection alive
             await asyncio.sleep(10)
     except KeyboardInterrupt:
+        print("Keyboard interrupt received, shutting down...")
+        consolidation_task.cancel()
         ws.close()
+    except Exception as e:
+        print(f"Error in websocket connection: {e}")
     finally:
         await producer.stop()
+
+async def detect_data_gaps(symbol: str, interval: str = "5min"):
+    """
+    Detect gaps in historical intraday data and determine what data needs to be fetched.
+    
+    Args:
+        symbol: Stock symbol to check
+        interval: Data interval (e.g., '5min', '15min')
+        
+    Returns:
+        dict: Information about data gaps and what to fetch
+    """
+    from db import get_conn
+    
+    # Convert interval string to minutes for database query
+    interval_mins = {
+        "1min": 1, "5min": 5, "15min": 15, "30min": 30, 
+        "1h": 60, "4h": 240
+    }.get(interval, 5)
+    
+    conn = get_conn()
+    cur = conn.cursor()
+    
+    try:
+        print(f"Checking existing data for {symbol} at {interval} interval...")
+        
+        # Find the most recent data point
+        cur.execute(
+            "SELECT MAX(timestamp) FROM intraday_ohlcv WHERE symbol = %s AND interval_minutes = %s",
+            (symbol, interval_mins)
+        )
+        latest_timestamp = cur.fetchone()[0]
+        
+        # Find the oldest data point
+        cur.execute(
+            "SELECT MIN(timestamp) FROM intraday_ohlcv WHERE symbol = %s AND interval_minutes = %s",
+            (symbol, interval_mins)
+        )
+        oldest_timestamp = cur.fetchone()[0]
+        
+        # Count how many records we have
+        cur.execute(
+            "SELECT COUNT(*) FROM intraday_ohlcv WHERE symbol = %s AND interval_minutes = %s",
+            (symbol, interval_mins)
+        )
+        record_count = cur.fetchone()[0]
+        
+        # Current time and yesterday (as we generally don't want to fetch current day data)
+        now = datetime.now()
+        yesterday = now - timedelta(days=1)
+        
+        # Calculate what data we need to fetch
+        if latest_timestamp is None:
+            # No data exists - need to do a full backfill
+            status = "full_backfill"
+            # Default to 1 year of data
+            start_date = (yesterday - timedelta(days=365)).strftime('%Y-%m-%d')
+            end_date = yesterday.strftime('%Y-%m-%d')
+            gap_days = 365
+            
+            print(f"No existing data found for {symbol} at {interval} interval.")
+            print(f"Will perform full backfill from {start_date} to {end_date}")
+            
+        else:
+            # Some data exists - need to check if it's up to date
+            latest_date = latest_timestamp.date()
+            yesterday_date = yesterday.date()
+            
+            if latest_date < yesterday_date:
+                # Data needs updating - fill the gap
+                status = "update"
+                # Start from the day after our latest data
+                start_date = (latest_timestamp + timedelta(days=1)).strftime('%Y-%m-%d')
+                end_date = yesterday.strftime('%Y-%m-%d')
+                gap_days = (yesterday_date - latest_date).days
+                
+                print(f"Data gap detected for {symbol}: from {start_date} to {end_date}")
+                print(f"Missing approximately {gap_days} days of data")
+                
+            else:
+                # Data is current
+                status = "current"
+                start_date = None
+                end_date = None
+                gap_days = 0
+                
+                print(f"Data for {symbol} at {interval} interval is up to date.")
+                print(f"Latest data point: {latest_timestamp}")
+        
+        return {
+            "symbol": symbol,
+            "interval": interval,
+            "status": status,
+            "record_count": record_count,
+            "latest_timestamp": latest_timestamp,
+            "oldest_timestamp": oldest_timestamp,
+            "start_date": start_date,
+            "end_date": end_date,
+            "gap_days": gap_days
+        }
+        
+    finally:
+        cur.close()
+        conn.close()
+
+async def smart_backfill(symbol: str, interval: str = "5min", max_days_back: int = 365):
+    """
+    Smart backfill of historical data - only fetch what's missing.
+    
+    Args:
+        symbol: Stock symbol to backfill
+        interval: Data interval (e.g., '5min', '15min')
+        max_days_back: Maximum days to backfill if doing a full backfill
+        
+    Returns:
+        dict: Information about the backfill operation
+    """
+    # First detect what data we have and what we need
+    gap_info = await detect_data_gaps(symbol, interval)
+    
+    if gap_info["status"] == "current":
+        print(f"Data for {symbol} at {interval} interval is already up to date. No backfill needed.")
+        return gap_info
+    
+    # If we're doing a backfill, either full or update
+    if gap_info["status"] in ["full_backfill", "update"]:
+        start_date = gap_info["start_date"]
+        end_date = gap_info["end_date"]
+        
+        print(f"Backfilling {symbol} {interval} data from {start_date} to {end_date}")
+        
+        # Fetch the missing data
+        chunks = await fetch_historic_intraday_data_chunked(
+            symbol=symbol,
+            interval=interval,
+            start_date=start_date,
+            end_date=end_date
+        )
+        
+        # Add information about the chunks we fetched to the gap info
+        gap_info["chunks_fetched"] = len(chunks)
+        gap_info["total_records_fetched"] = sum(len(df) for df in chunks.values())
+        
+        print(f"Backfill complete for {symbol} - fetched {gap_info['total_records_fetched']} records")
+        
+    return gap_info
+
+async def scheduled_consolidation(symbol):
+    """
+    Periodically consolidate real-time data to intraday and intraday to historical.
+    """
+    from db import consolidate_realtime_to_intraday, consolidate_intraday_to_daily, clean_realtime_data
+    
+    try:
+        print(f"Starting scheduled data consolidation for {symbol}")
+        while True:
+            # Every 15 minutes, consolidate real-time data older than 15 minutes
+            consolidated = consolidate_realtime_to_intraday(symbol, older_than_minutes=15)
+            if consolidated > 0:
+                print(f"Consolidated {consolidated} intervals from real-time to intraday")
+                
+            # Every day at midnight, consolidate previous day's intraday data to historical
+            now = datetime.now()
+            if now.hour == 0 and now.minute < 15:  # Between 00:00 and 00:15
+                consolidated = consolidate_intraday_to_daily(symbol, days_old=1)
+                if consolidated > 0:
+                    print(f"Consolidated {consolidated} days from intraday to historical")
+            
+            # Check if we should clean real-time data due to inactivity
+            cleaned = clean_realtime_data(idle_minutes=60)
+            
+            # Wait before next check
+            await asyncio.sleep(15 * 60)  # Check every 15 minutes
+    except asyncio.CancelledError:
+        print("Consolidation task cancelled")
+    except Exception as e:
+        print(f"Error in scheduled consolidation: {e}")
 
 if __name__ == "__main__":
     from db import init_db
@@ -263,5 +447,4 @@ if __name__ == "__main__":
         symbol="AAPL", 
         fetch_history=True,
         interval="5min",
-        days_back=365  # Fetch 1 year of data
     ))

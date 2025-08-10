@@ -7,7 +7,7 @@ from collections import defaultdict, deque
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
 from src.schemas import StockPriceEvent, AnalyticsEvent, DataQualityEvent, EventType
 from src.analytics_engine import TechnicalIndicators
-from src.db import insert_price, insert_analytics
+from src.db import *
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -185,19 +185,6 @@ class ETLPipeline:
             'processed_at': datetime.now()
         }
     
-    async def load_price_data(self, price_event: StockPriceEvent):
-        """Load price data into database"""
-        try:
-            insert_price(
-                price_event.symbol,
-                price_event.price,
-                price_event.timestamp.timestamp()
-            )
-            logger.debug(f"Loaded price data for {price_event.symbol}")
-        except Exception as e:
-            logger.error(f"Error loading price data: {e}")
-            raise
-    
     async def generate_analytics(self, price_event: StockPriceEvent) -> List[AnalyticsEvent]:
         """Generate analytics events from price data"""
         analytics_events = []
@@ -245,14 +232,45 @@ class ETLPipeline:
     async def load_analytics_data(self, analytics_event: AnalyticsEvent):
         """Load analytics data into database"""
         try:
-            insert_analytics(
-                analytics_event.symbol,
-                analytics_event.analytics_type,
-                analytics_event.value,
-                analytics_event.timestamp.timestamp(),
-                metadata=analytics_event.metadata
-            )
-            logger.debug(f"Loaded analytics data for {analytics_event.symbol}")
+            # Determine if this is intraday or daily data based on the event metadata
+            is_daily = analytics_event.metadata.get('interval') == 'daily' if analytics_event.metadata else False
+            
+            # Prepare indicator data as keyword arguments
+            indicator_type = analytics_event.analytics_type
+            value = analytics_event.value
+            
+            # Map the indicator type to the appropriate column name
+            indicator_mapping = {
+                'sma': f'sma_{analytics_event.metadata.get("period", 20)}',
+                'ema': f'ema_{analytics_event.metadata.get("period", 50)}',
+                'rsi': f'rsi_{analytics_event.metadata.get("period", 14)}',
+                'macd': 'macd',
+                'bollinger_upper': 'bollinger_upper',
+                'bollinger_lower': 'bollinger_lower'
+            }
+            
+            column_name = indicator_mapping.get(indicator_type.split('_')[0], indicator_type)
+            
+            # Prepare indicator data
+            indicators = {column_name: value}
+            
+            if is_daily:
+                # Insert into daily_analytics
+                insert_daily_analytics(
+                    analytics_event.symbol,
+                    analytics_event.timestamp,
+                    **indicators
+                )
+            else:
+                # Insert into intraday_analytics (default)
+                insert_intraday_analytics(
+                    analytics_event.symbol,
+                    analytics_event.timestamp,
+                    5,  # Default interval minutes
+                    **indicators
+                )
+                
+            logger.debug(f"Loaded {indicator_type} analytics data for {analytics_event.symbol}")
         except Exception as e:
             logger.error(f"Error loading analytics data: {e}")
             raise
@@ -328,4 +346,4 @@ class ETLPipeline:
 
 if __name__ == "__main__":
     pipeline = ETLPipeline()
-    asyncio.run(pipeline.start_pipeline()) 
+    asyncio.run(pipeline.start_pipeline())

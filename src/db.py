@@ -342,24 +342,29 @@ def get_pipeline_metrics():
     Get overall pipeline metrics and statistics.
     
     Returns:
-        dict: Dictionary containing:
-            - total_prices: Total number of price records
-            - total_analytics: Total number of analytics records
-            - total_issues: Total number of data quality issues
-            - total_dlq: Total number of dead letter queue items
-            - recent_prices: Number of price records in last hour
-            - recent_analytics: Number of analytics records in last hour
+        dict: Dictionary containing counts of records in various tables
     """
     conn = get_conn()
     cur = conn.cursor(cursor_factory=RealDictCursor)
     
-    # Get counts for each table
-    cur.execute("SELECT COUNT(*) as total_prices FROM prices")
-    total_prices = cur.fetchone()['total_prices']
+    # Get counts for each tier
+    cur.execute("SELECT COUNT(*) as realtime_prices FROM realtime_prices")
+    realtime_prices = cur.fetchone()['realtime_prices']
     
-    cur.execute("SELECT COUNT(*) as total_analytics FROM analytics")
-    total_analytics = cur.fetchone()['total_analytics']
+    cur.execute("SELECT COUNT(*) as intraday_ohlcv FROM intraday_ohlcv")
+    intraday_ohlcv = cur.fetchone()['intraday_ohlcv']
     
+    cur.execute("SELECT COUNT(*) as historical_ohlcv FROM historical_ohlcv")
+    historical_ohlcv = cur.fetchone()['historical_ohlcv']
+    
+    # Get counts for analytics tables
+    cur.execute("SELECT COUNT(*) as intraday_analytics FROM intraday_analytics")
+    intraday_analytics = cur.fetchone()['intraday_analytics']
+    
+    cur.execute("SELECT COUNT(*) as daily_analytics FROM daily_analytics")
+    daily_analytics = cur.fetchone()['daily_analytics']
+    
+    # Get counts for other tables
     cur.execute("SELECT COUNT(*) as total_issues FROM data_quality_issues")
     total_issues = cur.fetchone()['total_issues']
     
@@ -367,20 +372,23 @@ def get_pipeline_metrics():
     total_dlq = cur.fetchone()['total_dlq']
     
     # Get recent activity (last hour)
-    cur.execute("SELECT COUNT(*) as recent_prices FROM prices WHERE timestamp > NOW() - INTERVAL '1 hour'")
+    cur.execute("SELECT COUNT(*) as recent_prices FROM realtime_prices WHERE timestamp > NOW() - INTERVAL '1 hour'")
     recent_prices = cur.fetchone()['recent_prices']
     
-    cur.execute("SELECT COUNT(*) as recent_analytics FROM analytics WHERE timestamp > NOW() - INTERVAL '1 hour'")
+    cur.execute("SELECT COUNT(*) as recent_analytics FROM intraday_analytics WHERE timestamp > NOW() - INTERVAL '1 hour'")
     recent_analytics = cur.fetchone()['recent_analytics']
     
     cur.close()
     conn.close()
     
     return {
-        'total_prices': total_prices,
-        'total_analytics': total_analytics,
-        'total_issues': total_issues,
-        'total_dlq': total_dlq,
+        'realtime_prices': realtime_prices,
+        'intraday_ohlcv': intraday_ohlcv,
+        'historical_ohlcv': historical_ohlcv,
+        'intraday_analytics': intraday_analytics,
+        'daily_analytics': daily_analytics,
+        'data_quality_issues': total_issues,
+        'dead_letter_queue': total_dlq,
         'recent_prices': recent_prices,
         'recent_analytics': recent_analytics
     } 

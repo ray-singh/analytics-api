@@ -13,12 +13,13 @@ Uses TimescaleDB (PostgreSQL extension) for time-series optimization.
 import psycopg2
 from psycopg2.extras import RealDictCursor
 import os
+from datetime import datetime, timedelta
 
 # Database connection configuration
 # Can be overridden via environment variables
 DB_HOST = os.getenv("DB_HOST", "localhost")
 DB_PORT = os.getenv("DB_PORT", "5432")
-DB_NAME = os.getenv("DB_NAME", "stocks")
+DB_NAME = os.getenv("DB_NAME", "postgres")
 DB_USER = os.getenv("DB_USER", "postgres")
 DB_PASSWORD = os.getenv("DB_PASSWORD", "postgres")
 
@@ -48,17 +49,6 @@ def init_db():
     # Create tables
     try:
         print("Creating tables...")
-        cur.execute('''
-            CREATE TABLE IF NOT EXISTS prices (
-                id SERIAL PRIMARY KEY,
-                symbol TEXT NOT NULL,
-                price DOUBLE PRECISION NOT NULL,
-                volume INTEGER,
-                timestamp TIMESTAMPTZ NOT NULL,
-                source TEXT DEFAULT 'simulation',
-                created_at TIMESTAMPTZ DEFAULT NOW()
-            );
-        ''')
         cur.execute('''
             CREATE TABLE IF NOT EXISTS analytics (
                 id SERIAL PRIMARY KEY,
@@ -101,11 +91,6 @@ def init_db():
 
     # Create TimescaleDB hypertables
     try:
-        print("Creating hypertable for prices...")
-        cur.execute("ALTER TABLE prices DROP CONSTRAINT IF EXISTS prices_pkey;")
-        cur.execute("ALTER TABLE prices ADD PRIMARY KEY (id, timestamp);")
-        cur.execute("SELECT create_hypertable('prices', 'timestamp', if_not_exists => TRUE);")
-
         print("Creating hypertable for analytics...")
         cur.execute("ALTER TABLE analytics DROP CONSTRAINT IF EXISTS analytics_pkey;")
         cur.execute("ALTER TABLE analytics ADD PRIMARY KEY (id, timestamp);")
@@ -125,7 +110,6 @@ def init_db():
     try:
         print("Creating indexes...")
         cur.execute('''
-            CREATE INDEX IF NOT EXISTS idx_prices_symbol_timestamp ON prices(symbol, timestamp DESC);
             CREATE INDEX IF NOT EXISTS idx_analytics_symbol_type_timestamp ON analytics(symbol, analytics_type, timestamp DESC);
             CREATE INDEX IF NOT EXISTS idx_dq_issues_symbol_severity ON data_quality_issues(symbol, severity);
         ''')
@@ -137,57 +121,112 @@ def init_db():
 
     cur.close()
     conn.close()
+    init_tiered_tables() 
 
-def insert_price(symbol, price, timestamp, volume=None, source="simulation"):
-    """
-    Insert a new stock price record into the database.
-    
-    Args:
-        symbol (str): Stock symbol (e.g., 'AAPL', 'MSFT')
-        price (float): Current stock price
-        timestamp (float): Unix timestamp when price was recorded
-        volume (int, optional): Trading volume
-        source (str): Data source (default: 'simulation')
-    """
+def init_tiered_tables():
     conn = get_conn()
     cur = conn.cursor()
-    
-    # Check which columns exist in the prices table
-    cur.execute("""
-        SELECT column_name 
-        FROM information_schema.columns 
-        WHERE table_name = 'prices'
-        ORDER BY column_name
-    """)
-    
-    existing_columns = [row[0] for row in cur.fetchall()]
-    print(f"Existing columns in prices table: {existing_columns}")
-    
-    # Build dynamic INSERT query based on available columns
-    columns = ['symbol', 'price', 'timestamp']
-    values = [symbol, price, timestamp]
-    
-    if 'volume' in existing_columns:
-        columns.append('volume')
-        values.append(volume)
-    
-    if 'source' in existing_columns:
-        columns.append('source')
-        values.append(source)
-    
-    # Create the INSERT query
-    column_list = ', '.join(columns)
-    placeholders = ', '.join(['%s' if col != 'timestamp' else 'to_timestamp(%s)' for col in columns])
 
-    query = f"INSERT INTO prices ({column_list}) VALUES ({placeholders})"
+    try:
+        print("Creating three-tier data architecture tables...")
+        
+        # 1. Real-time prices table (volatile)
+        cur.execute('''
+            CREATE TABLE IF NOT EXISTS realtime_prices (
+                id SERIAL,
+                symbol TEXT NOT NULL,
+                price DOUBLE PRECISION NOT NULL,
+                volume BIGINT,
+                timestamp TIMESTAMPTZ NOT NULL,
+                source TEXT DEFAULT 'TwelveData',
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            );
+        ''')
+        
+        # 2. Intraday OHLCV table (non-volatile)
+        cur.execute('''
+            CREATE TABLE IF NOT EXISTS intraday_ohlcv (
+                id SERIAL,
+                symbol TEXT NOT NULL,
+                timestamp TIMESTAMPTZ NOT NULL,
+                interval_minutes INTEGER NOT NULL DEFAULT 5,
+                open DOUBLE PRECISION NOT NULL,
+                high DOUBLE PRECISION NOT NULL,
+                low DOUBLE PRECISION NOT NULL,
+                close DOUBLE PRECISION NOT NULL,
+                volume BIGINT,
+                num_samples INTEGER DEFAULT 1,
+                last_updated TIMESTAMPTZ DEFAULT NOW(),
+                source TEXT DEFAULT 'Consolidated'
+            );
+        ''')
+        
+        # 3. Historical OHLCV table (non-volatile)
+        cur.execute('''
+            CREATE TABLE IF NOT EXISTS historical_ohlcv (
+                id SERIAL,
+                symbol TEXT NOT NULL,
+                timestamp TIMESTAMPTZ NOT NULL,
+                open DOUBLE PRECISION NOT NULL,
+                high DOUBLE PRECISION NOT NULL,
+                low DOUBLE PRECISION NOT NULL,
+                close DOUBLE PRECISION NOT NULL,
+                volume BIGINT,
+                split_coefficient DOUBLE PRECISION DEFAULT 1,
+                source TEXT DEFAULT 'AlphaVantage',
+                created_at TIMESTAMPTZ DEFAULT NOW()
+            );
+        ''')
 
-    print(f"Executing query: {query}")
-    print(f"With values: {values}")
+        # Create hypertables
+        print("Creating hypertables...")
+        
+        cur.execute("ALTER TABLE realtime_prices DROP CONSTRAINT IF EXISTS realtime_prices_pkey;")
+        cur.execute("ALTER TABLE realtime_prices ADD PRIMARY KEY (id, timestamp);")
+        cur.execute("SELECT create_hypertable('realtime_prices', 'timestamp', if_not_exists => TRUE);")
+        
+        cur.execute("ALTER TABLE intraday_ohlcv DROP CONSTRAINT IF EXISTS intraday_ohlcv_pkey;")
+        cur.execute("ALTER TABLE intraday_ohlcv ADD PRIMARY KEY (symbol, timestamp, interval_minutes);")
+        cur.execute("SELECT create_hypertable('intraday_ohlcv', 'timestamp', if_not_exists => TRUE);")
+        
+        cur.execute("ALTER TABLE historical_ohlcv DROP CONSTRAINT IF EXISTS historical_ohlcv_pkey;")
+        cur.execute("ALTER TABLE historical_ohlcv ADD PRIMARY KEY (symbol, timestamp);")
+        cur.execute("SELECT create_hypertable('historical_ohlcv', 'timestamp', if_not_exists => TRUE);")
+        conn.commit()
 
-    cur.execute(query, values)
-    conn.commit()
-    cur.close()
-    conn.close()
+        # Create indexes
+        print("Creating indexes...")
+        cur.execute('''
+            CREATE INDEX IF NOT EXISTS idx_realtime_symbol_timestamp 
+            ON realtime_prices(symbol, timestamp DESC);
+        ''')
+        cur.execute('''
+            CREATE INDEX IF NOT EXISTS idx_intraday_symbol_timestamp 
+            ON intraday_ohlcv(symbol, timestamp DESC);
+        ''')
+        cur.execute('''
+            CREATE INDEX IF NOT EXISTS idx_historical_symbol_timestamp 
+            ON historical_ohlcv(symbol, timestamp DESC);
+        ''')
+        conn.commit()
+
+        # Retention policies
+        cur.execute('''
+            SELECT add_retention_policy('realtime_prices', INTERVAL '3 hours', if_not_exists => TRUE);
+        ''')
+        cur.execute('''
+            SELECT add_retention_policy('intraday_ohlcv', INTERVAL '2 years', if_not_exists => TRUE);
+        ''')
+        conn.commit()
+
+        print("Three-tier data architecture created successfully.")
+
+    except Exception as e:
+        print(f"Error creating tiered tables: {e}")
+        conn.rollback()
+    finally:
+        cur.close()
+        conn.close()
 
 def insert_analytics(symbol, analytics_type, value, timestamp, window_size=None, metadata=None):
     """
@@ -405,6 +444,42 @@ def get_pipeline_metrics():
         'recent_analytics': recent_analytics
     } 
 
+def get_ohlc_history(symbol, start_timestamp=None, end_timestamp=None, limit=100):
+    """
+    Get historical OHLC data for a given symbol and time range.
+    
+    Args:
+        symbol (str): Stock symbol to query
+        start_timestamp (int, optional): Start of date range as Unix timestamp
+        end_timestamp (int, optional): End of date range as Unix timestamp
+        limit (int): Maximum number of records to return
+        
+    Returns:
+        list: List of OHLC records as dictionaries, ordered by timestamp DESC
+    """
+    conn = get_conn()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    
+    query = "SELECT * FROM historical_ohlc WHERE symbol=%s"
+    params = [symbol]
+    
+    if start_timestamp:
+        query += " AND timestamp >= to_timestamp(%s)"
+        params.append(start_timestamp)
+        
+    if end_timestamp:
+        query += " AND timestamp <= to_timestamp(%s)"
+        params.append(end_timestamp)
+        
+    query += " ORDER BY timestamp DESC LIMIT %s"
+    params.append(limit)
+    
+    cur.execute(query, params)
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+    return rows
+
 def recreate_db_schema():
     """
     Drop and recreate all tables. Use with caution - this will delete all data!
@@ -418,13 +493,358 @@ def recreate_db_schema():
         cur.execute("DROP TABLE IF EXISTS data_quality_issues CASCADE")
         cur.execute("DROP TABLE IF EXISTS dead_letter_queue CASCADE")
         cur.execute("DROP TABLE IF EXISTS prices CASCADE")
-        
+        cur.execute("DROP TABLE IF EXISTS historical_ohlc CASCADE")
+        cur.execute("DROP TABLE IF EXISTS intraday_ohlcv CASCADE")
+        cur.execute("DROP TABLE IF EXISTS realtime_prices CASCADE")
+        conn.commit()
         print("Dropped existing tables")
-        
-        # Recreate tables
-        
+            
     except Exception as e:
         print(f"Error recreating schema: {e}")
         conn.rollback()
     finally:
+        conn.close()
+
+def insert_realtime_price(symbol, price, timestamp, volume=None, source="TwelveData"):
+    """
+    Insert a new real-time price record into the volatile realtime_prices table.
+    
+    Args:
+        symbol (str): Stock symbol (e.g., 'AAPL', 'MSFT')
+        price (float): Current stock price
+        timestamp (float): Unix timestamp when price was recorded
+        volume (int, optional): Trading volume
+        source (str): Data source (default: 'TwelveData')
+    """
+    conn = get_conn()
+    cur = conn.cursor()
+    
+    try:
+        cur.execute(
+            "INSERT INTO realtime_prices (symbol, price, volume, timestamp, source) VALUES (%s, %s, %s, to_timestamp(%s), %s)",
+            (symbol, price, volume, timestamp, source)
+        )
+        conn.commit()
+    except Exception as e:
+        print(f"Error inserting real-time price: {e}")
+        conn.rollback()
+    finally:
+        cur.close()
+        conn.close()
+
+def insert_intraday_ohlcv(symbol, timestamp, open_price, high, low, close, volume=None, interval_minutes=5, source="AlphaVantage"):
+    """
+    Insert an intraday OHLCV record into the intraday_ohlcv table.
+    
+    Args:
+        symbol (str): Stock symbol (e.g., 'AAPL', 'MSFT')
+        timestamp (float): Unix timestamp for the start of the interval
+        open_price (float): Opening price for the interval
+        high (float): Highest price during the interval
+        low (float): Lowest price during the interval
+        close (float): Closing price for the interval
+        volume (int, optional): Trading volume during the interval
+        interval_minutes (int): Interval duration in minutes (default: 5)
+        source (str): Data source (default: 'AlphaVantage')
+    """
+    conn = get_conn()
+    cur = conn.cursor()
+    
+    try:
+        # Round timestamp to the nearest interval
+        # This ensures we don't create duplicate intervals with slightly different timestamps
+        query = """
+            INSERT INTO intraday_ohlcv 
+            (symbol, timestamp, interval_minutes, open, high, low, close, volume, source, last_updated) 
+            VALUES (%s, date_trunc('minute', to_timestamp(%s) - 
+                   (EXTRACT(MINUTE FROM to_timestamp(%s))::integer %% %s) * interval '1 minute'), 
+                   %s, %s, %s, %s, %s, %s, %s, NOW())
+            ON CONFLICT (symbol, timestamp, interval_minutes)
+            DO UPDATE SET 
+                high = GREATEST(intraday_ohlcv.high, EXCLUDED.high),
+                low = LEAST(intraday_ohlcv.low, EXCLUDED.low),
+                close = EXCLUDED.close,
+                volume = COALESCE(intraday_ohlcv.volume, 0) + COALESCE(EXCLUDED.volume, 0),
+                num_samples = intraday_ohlcv.num_samples + 1,
+                last_updated = NOW()
+        """
+        
+        cur.execute(query, (symbol, timestamp, timestamp, interval_minutes, 
+                           interval_minutes, open_price, high, low, close, 
+                           volume, source))
+        conn.commit()
+    except Exception as e:
+        print(f"Error inserting intraday OHLCV: {e}")
+        conn.rollback()
+    finally:
+        cur.close()
+        conn.close()
+
+def insert_historical_daily(symbol, timestamp, open_price, high, low, close, volume=None, 
+                           adjusted_close=None, dividend_amount=0, split_coefficient=1, source="AlphaVantage"):
+    """
+    Insert a historical daily OHLCV record into the historical_ohlcv table.
+    
+    Args:
+        symbol (str): Stock symbol (e.g., 'AAPL', 'MSFT')
+        timestamp (float): Unix timestamp for the day
+        open_price (float): Opening price for the day
+        high (float): Highest price during the day
+        low (float): Lowest price during the day
+        close (float): Closing price for the day
+        volume (int, optional): Trading volume for the day
+        adjusted_close (float, optional): Close price adjusted for dividends/splits
+        dividend_amount (float): Dividend amount if applicable
+        split_coefficient (float): Split coefficient if applicable
+        source (str): Data source (default: 'AlphaVantage')
+    """
+    conn = get_conn()
+    cur = conn.cursor()
+    
+    try:
+        # Round timestamp to start of day
+        query = """
+            INSERT INTO historical_ohlcv 
+            (symbol, timestamp, open, high, low, close, volume, 
+             adjusted_close, dividend_amount, split_coefficient, source) 
+            VALUES (%s, date_trunc('day', to_timestamp(%s)), %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (symbol, timestamp)
+            DO UPDATE SET 
+                open = EXCLUDED.open,
+                high = EXCLUDED.high,
+                low = EXCLUDED.low,
+                close = EXCLUDED.close,
+                volume = EXCLUDED.volume,
+                adjusted_close = EXCLUDED.adjusted_close,
+                dividend_amount = EXCLUDED.dividend_amount,
+                split_coefficient = EXCLUDED.split_coefficient,
+                source = EXCLUDED.source
+        """
+        
+        cur.execute(query, (symbol, timestamp, open_price, high, low, close, 
+                           volume, adjusted_close or close, dividend_amount, 
+                           split_coefficient, source))
+        conn.commit()
+    except Exception as e:
+        print(f"Error inserting historical daily data: {e}")
+        conn.rollback()
+    finally:
+        cur.close()
+        conn.close()
+
+def consolidate_realtime_to_intraday(symbol=None, older_than_minutes=15):
+    """
+    Consolidate real-time price data into 5-minute OHLCV intervals in the intraday table,
+    and optionally clean up older real-time data.
+    
+    Args:
+        symbol (str, optional): Only process specific symbol
+        older_than_minutes (int): Only process data older than this many minutes
+        
+    Returns:
+        int: Number of intervals consolidated
+    """
+    conn = get_conn()
+    cur = conn.cursor()
+    
+    try:
+        # Construct base query and params
+        query_params = []
+        
+        # Get the cutoff timestamp
+        cutoff_time = datetime.now() - timedelta(minutes=older_than_minutes)
+        
+        # Find the time buckets that need to be consolidated
+        query = """
+        WITH time_buckets AS (
+            SELECT 
+                symbol,
+                date_trunc('minute', timestamp - 
+                (EXTRACT(MINUTE FROM timestamp)::integer % 5) * interval '1 minute') AS interval_start,
+                MIN(price) AS low,
+                MAX(price) AS high,
+                FIRST_VALUE(price) OVER (PARTITION BY symbol, 
+                  date_trunc('minute', timestamp - 
+                  (EXTRACT(MINUTE FROM timestamp)::integer % 5) * interval '1 minute')
+                  ORDER BY timestamp) AS open,
+                LAST_VALUE(price) OVER (PARTITION BY symbol, 
+                  date_trunc('minute', timestamp - 
+                  (EXTRACT(MINUTE FROM timestamp)::integer % 5) * interval '1 minute')
+                  ORDER BY timestamp ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) AS close,
+                SUM(volume) AS volume,
+                COUNT(*) AS num_samples
+            FROM realtime_prices
+            WHERE timestamp < %s
+        """
+        query_params.append(cutoff_time)
+        
+        if symbol:
+            query += " AND symbol = %s"
+            query_params.append(symbol)
+        
+        query += """
+            GROUP BY symbol, interval_start
+        )
+        INSERT INTO intraday_ohlcv 
+            (symbol, timestamp, interval_minutes, open, high, low, close, volume, num_samples, source)
+        SELECT 
+            symbol, interval_start, 5, open, high, low, close, volume, num_samples, 'Consolidated'
+        FROM time_buckets
+        ON CONFLICT (symbol, timestamp, interval_minutes)
+        DO UPDATE SET
+            high = GREATEST(intraday_ohlcv.high, EXCLUDED.high),
+            low = LEAST(intraday_ohlcv.low, EXCLUDED.low),
+            close = EXCLUDED.close,
+            volume = COALESCE(intraday_ohlcv.volume, 0) + COALESCE(EXCLUDED.volume, 0),
+            num_samples = intraday_ohlcv.num_samples + EXCLUDED.num_samples,
+            last_updated = NOW()
+        RETURNING symbol, timestamp
+        """
+        
+        cur.execute(query, query_params)
+        consolidated = cur.fetchall()
+        
+        # Delete consolidated data from realtime table
+        if consolidated:
+            # Build a query to delete the consolidated data
+            placeholders = ', '.join(['%s'] * len(consolidated))
+            symbols = [row[0] for row in consolidated]
+            timestamps = [row[1] for row in consolidated]
+            
+            # For each consolidated interval, delete the corresponding realtime data
+            for i in range(len(consolidated)):
+                symbol = consolidated[i][0]
+                interval_start = consolidated[i][1]
+                interval_end = interval_start + timedelta(minutes=5)
+                
+                cur.execute(
+                    "DELETE FROM realtime_prices WHERE symbol = %s AND timestamp >= %s AND timestamp < %s",
+                    (symbol, interval_start, interval_end)
+                )
+                
+        conn.commit()
+        return len(consolidated)
+    
+    except Exception as e:
+        print(f"Error consolidating realtime data: {e}")
+        conn.rollback()
+        return 0
+    finally:
+        cur.close()
+        conn.close()
+
+def consolidate_intraday_to_daily(symbol=None, days_old=1):
+    """
+    Consolidate intraday OHLCV data into daily OHLCV records in the historical table
+    for data older than specified days.
+    
+    Args:
+        symbol (str, optional): Only process specific symbol
+        days_old (int): Only process data older than this many days
+        
+    Returns:
+        int: Number of days consolidated
+    """
+    conn = get_conn()
+    cur = conn.cursor()
+    
+    try:
+        # Get the cutoff timestamp
+        cutoff_time = datetime.now() - timedelta(days=days_old)
+        
+        # Construct base query and params
+        query_params = [cutoff_time]
+        
+        # Find daily data to consolidate
+        query = """
+        WITH daily_data AS (
+            SELECT 
+                symbol,
+                date_trunc('day', timestamp) AS day_start,
+                FIRST_VALUE(open) OVER (PARTITION BY symbol, date_trunc('day', timestamp) 
+                                      ORDER BY timestamp) AS open_price,
+                MAX(high) AS high,
+                MIN(low) AS low,
+                LAST_VALUE(close) OVER (PARTITION BY symbol, date_trunc('day', timestamp) 
+                                      ORDER BY timestamp ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING) AS close_price,
+                SUM(volume) AS volume
+            FROM intraday_ohlcv
+            WHERE timestamp < %s
+        """
+        
+        if symbol:
+            query += " AND symbol = %s"
+            query_params.append(symbol)
+        
+        query += """
+            GROUP BY symbol, day_start
+        )
+        INSERT INTO historical_ohlcv 
+            (symbol, timestamp, open, high, low, close, volume, adjusted_close, source)
+        SELECT 
+            symbol, day_start, open_price, high, low, close_price, volume, close_price, 'Consolidated'
+        FROM daily_data
+        ON CONFLICT (symbol, timestamp)
+        DO UPDATE SET
+            open = EXCLUDED.open,
+            high = GREATEST(historical_ohlcv.high, EXCLUDED.high),
+            low = LEAST(historical_ohlcv.low, EXCLUDED.low),
+            close = EXCLUDED.close,
+            volume = COALESCE(historical_ohlcv.volume, 0) + COALESCE(EXCLUDED.volume, 0)
+        RETURNING symbol, timestamp
+        """
+        
+        cur.execute(query, query_params)
+        consolidated = cur.fetchall()
+        
+        # We don't delete intraday data as it's kept for 2 years according to retention policy
+        
+        conn.commit()
+        return len(consolidated)
+    
+    except Exception as e:
+        print(f"Error consolidating intraday data: {e}")
+        conn.rollback()
+        return 0
+    finally:
+        cur.close()
+        conn.close()
+
+def clean_realtime_data(idle_minutes=60):
+    """
+    Clean up the realtime_prices table when the API has been idle.
+    
+    Args:
+        idle_minutes (int): Clean if no new data for this many minutes
+        
+    Returns:
+        bool: True if data was cleaned, False otherwise
+    """
+    conn = get_conn()
+    cur = conn.cursor()
+    
+    try:
+        # Check last entry timestamp
+        cur.execute("SELECT MAX(timestamp) FROM realtime_prices")
+        last_timestamp = cur.fetchone()[0]
+        
+        # If no data or last data is older than idle threshold, clean up
+        if not last_timestamp or datetime.now() - last_timestamp > timedelta(minutes=idle_minutes):
+            # First ensure data is consolidated
+            consolidate_realtime_to_intraday()
+            
+            # Then clean the table
+            cur.execute("TRUNCATE TABLE realtime_prices")
+            conn.commit()
+            print(f"Realtime table cleaned due to {idle_minutes} minutes of inactivity")
+            return True
+        
+        return False
+    
+    except Exception as e:
+        print(f"Error cleaning realtime data: {e}")
+        conn.rollback()
+        return False
+    finally:
+        cur.close()
         conn.close()

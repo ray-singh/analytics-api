@@ -5,3 +5,6 @@ pydantic
 psycopg2-binary
 asyncpg
 numpy
+twelvedata[pandas,matplotlib,plotly,websocket-client]
+twelvedata
+yfinance

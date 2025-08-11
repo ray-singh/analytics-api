@@ -49,7 +49,7 @@ def init_db():
     # Create tables
     try:
         print("Creating tables...")
-        
+    
         # Replace generic analytics table with specialized tables
         cur.execute('''
             CREATE TABLE IF NOT EXISTS intraday_analytics (
@@ -61,7 +61,7 @@ def init_db():
                 rsi_14 DOUBLE PRECISION,
                 macd DOUBLE PRECISION,
                 bollinger_upper DOUBLE PRECISION,
-                bollinger_lower DOUBLE PRECISION,
+                bollinger_lower DOUBLE PRECISION
             );
         ''')
         
@@ -74,7 +74,7 @@ def init_db():
                 rsi_14 DOUBLE PRECISION,
                 macd DOUBLE PRECISION,
                 bollinger_upper DOUBLE PRECISION,
-                bollinger_lower DOUBLE PRECISION,
+                bollinger_lower DOUBLE PRECISION
             );
         ''')
         
@@ -196,9 +196,7 @@ def init_tiered_tables():
                 low DOUBLE PRECISION NOT NULL,
                 close DOUBLE PRECISION NOT NULL,
                 volume BIGINT,
-                split_coefficient DOUBLE PRECISION DEFAULT 1,
-                source TEXT DEFAULT 'AlphaVantage',
-                created_at TIMESTAMPTZ DEFAULT NOW()
+                source TEXT DEFAULT 'AlphaVantage'
             );
         ''')
 
@@ -251,28 +249,6 @@ def init_tiered_tables():
     finally:
         cur.close()
         conn.close()
-
-def insert_analytics(symbol, analytics_type, value, timestamp, window_size=None, metadata=None):
-    """
-    Insert a new analytics record into the database.
-    
-    Args:
-        symbol (str): Stock symbol (e.g., 'AAPL', 'MSFT')
-        analytics_type (str): Type of analytics (e.g., 'moving_average', 'volatility')
-        value (float): Computed analytics value
-        timestamp (float): Unix timestamp when analytics was computed
-        window_size (int, optional): Window size used for calculation (e.g., 5 for 5-period MA)
-        metadata (dict, optional): Additional analytics data as JSON
-    """
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute(
-        "INSERT INTO analytics (symbol, analytics_type, value, window_size, timestamp, metadata) VALUES (%s, %s, %s, %s, to_timestamp(%s), %s)",
-        (symbol, analytics_type, value, window_size, timestamp, metadata)
-    )
-    conn.commit()
-    cur.close()
-    conn.close()
 
 def insert_data_quality_issue(symbol, issue_type, description, severity, timestamp, metadata=None):
     """
@@ -482,7 +458,7 @@ def insert_realtime_price(symbol, price, timestamp, volume=None, source="TwelveD
         cur.close()
         conn.close()
 
-def insert_intraday_ohlcv(symbol, timestamp, open_price, high, low, close, volume=None, interval_minutes=5, source="AlphaVantage"):
+def insert_intraday_ohlcv(symbol, timestamp, open_price, high, low, close, volume=None, interval_minutes=5, source="TwelveData"):
     """
     Insert an intraday OHLCV record into the intraday_ohlcv table.
     
@@ -495,7 +471,7 @@ def insert_intraday_ohlcv(symbol, timestamp, open_price, high, low, close, volum
         close (float): Closing price for the interval
         volume (int, optional): Trading volume during the interval
         interval_minutes (int): Interval duration in minutes (default: 5)
-        source (str): Data source (default: 'AlphaVantage')
+        source (str): Data source (default: 'TwelveData')
     """
     conn = get_conn()
     cur = conn.cursor()
@@ -530,8 +506,7 @@ def insert_intraday_ohlcv(symbol, timestamp, open_price, high, low, close, volum
         cur.close()
         conn.close()
 
-def insert_historical_daily(symbol, timestamp, open_price, high, low, close, volume=None, 
-                           adjusted_close=None, dividend_amount=0, split_coefficient=1, source="AlphaVantage"):
+def insert_historical_daily(symbol, timestamp, open_price, high, low, close, volume=None, source="AlphaVantage"):
     """
     Insert a historical daily OHLCV record into the historical_ohlcv table.
     
@@ -543,9 +518,6 @@ def insert_historical_daily(symbol, timestamp, open_price, high, low, close, vol
         low (float): Lowest price during the day
         close (float): Closing price for the day
         volume (int, optional): Trading volume for the day
-        adjusted_close (float, optional): Close price adjusted for dividends/splits
-        dividend_amount (float): Dividend amount if applicable
-        split_coefficient (float): Split coefficient if applicable
         source (str): Data source (default: 'AlphaVantage')
     """
     conn = get_conn()
@@ -555,25 +527,19 @@ def insert_historical_daily(symbol, timestamp, open_price, high, low, close, vol
         # Round timestamp to start of day
         query = """
             INSERT INTO historical_ohlcv 
-            (symbol, timestamp, open, high, low, close, volume, 
-             adjusted_close, dividend_amount, split_coefficient, source) 
-            VALUES (%s, date_trunc('day', to_timestamp(%s)), %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            (symbol, timestamp, open, high, low, close, volume, source) 
+            VALUES (%s, date_trunc('day', to_timestamp(%s)), %s, %s, %s, %s, %s, %s)
             ON CONFLICT (symbol, timestamp)
             DO UPDATE SET 
                 open = EXCLUDED.open,
-                high = EXCLUDED.high,
-                low = EXCLUDED.low,
+                high = GREATEST(historical_ohlcv.high, EXCLUDED.high),
+                low = LEAST(historical_ohlcv.low, EXCLUDED.low),
                 close = EXCLUDED.close,
                 volume = EXCLUDED.volume,
-                adjusted_close = EXCLUDED.adjusted_close,
-                dividend_amount = EXCLUDED.dividend_amount,
-                split_coefficient = EXCLUDED.split_coefficient,
                 source = EXCLUDED.source
         """
         
-        cur.execute(query, (symbol, timestamp, open_price, high, low, close, 
-                           volume, adjusted_close or close, dividend_amount, 
-                           split_coefficient, source))
+        cur.execute(query, (symbol, timestamp, open_price, high, low, close, volume, source))
         conn.commit()
     except Exception as e:
         print(f"Error inserting historical daily data: {e}")

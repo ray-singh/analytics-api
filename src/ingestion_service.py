@@ -6,10 +6,12 @@ import os
 import pandas as pd
 from twelvedata import TDClient
 from aiokafka import AIOKafkaProducer
-from db import insert_realtime_price, insert_intraday_ohlcv
+from db import insert_realtime_price, insert_intraday_ohlcv, insert_historical_daily
 from dotenv import load_dotenv
 from datetime import datetime, timedelta
 import time
+import requests
+import io
 
 # Kafka configuration
 KAFKA_TOPIC = "stock_prices"
@@ -440,9 +442,52 @@ async def scheduled_consolidation(symbol):
     except Exception as e:
         print(f"Error in scheduled consolidation: {e}")
 
+async def fetch_and_store_historical_ohlcv(symbol: str):
+    """
+    Fetch historical daily OHLCV data from Alpha Vantage and store it in the database.
+    
+    Args:
+        symbol: Stock symbol (e.g., 'AAPL')
+    """
+    # Fetch data from Alpha Vantage
+    print(f"Fetching historical daily OHLCV data for {symbol}...")
+    url = f"https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol={symbol}&outputsize=full&apikey={ALPHA_VANTAGE_API_KEY}&datatype=csv"
+    
+    try:
+        response = requests.get(url)
+        if response.status_code != 200:
+            print(f"Error fetching data for {symbol}: {response.status_code} - {response.text}")
+            return
+        
+        # Parse the CSV response into a DataFrame
+        data = pd.read_csv(io.StringIO(response.text))
+        if data.empty:
+            print(f"No data returned for {symbol}.")
+            return
+        
+        # Insert data into the database
+        for _, row in data.iterrows():
+            print(f"Inserting data for {symbol} on {row['timestamp']}")
+            insert_historical_daily(
+                symbol=symbol,
+                timestamp=pd.Timestamp(row['timestamp']).timestamp(),
+                open_price=row['open'],
+                high=row['high'],
+                low=row['low'],
+                close=row['close'],
+                volume=row['volume'],
+                source="AlphaVantage"
+            )
+        
+        print(f"Successfully inserted historical daily OHLCV data for {symbol}.")
+    
+    except Exception as e:
+        print(f"Error fetching or storing data for {symbol}: {e}")
+
 if __name__ == "__main__":
     from db import init_db
     init_db()
+    asyncio.run(fetch_and_store_historical_ohlcv('AAPL'))
     asyncio.run(subscribe_and_produce(
         symbol="AAPL", 
         fetch_history=True,

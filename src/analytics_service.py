@@ -131,7 +131,7 @@ async def calculate_intraday_indicators(symbol, timestamp):
             indicators['bollinger_upper'] = bb_data['upper_band']
             indicators['bollinger_lower'] = bb_data['lower_band']
             indicators['bollinger_middle'] = bb_data['middle_band']
-        
+        print(f"Indicators for {symbol} at {rounded_timestamp}: {indicators}")
         # Only store if we have at least some indicators calculated
         if indicators:
             # Store in database

@@ -39,6 +39,17 @@ def get_conn():
         password=DB_PASSWORD
     )
 
+def hypertable_exists(cur, table_name):
+    '''Check if a TimescaleDB hypertable exists.'''
+    cur.execute("""
+        SELECT EXISTS (
+            SELECT 1
+            FROM timescaledb_information.hypertables
+            WHERE hypertable_name = %s
+        );
+    """, (table_name,))
+    return cur.fetchone()[0]
+
 def init_db():
     """
     Initialize the database schema, handle migrations, and create TimescaleDB hypertables.
@@ -51,30 +62,51 @@ def init_db():
         print("Creating tables...")
     
         # Replace generic analytics table with specialized tables
+        print("Creating intraday_analytics table...")
         cur.execute('''
             CREATE TABLE IF NOT EXISTS intraday_analytics (
                 symbol TEXT NOT NULL,
                 timestamp TIMESTAMPTZ NOT NULL,
                 interval_minutes INTEGER NOT NULL DEFAULT 5,
+                sma_5 DOUBLE PRECISION,
+                sma_10 DOUBLE PRECISION,
                 sma_20 DOUBLE PRECISION,
+                sma_50 DOUBLE PRECISION,
+                ema_5 DOUBLE PRECISION,
+                ema_10 DOUBLE PRECISION,
+                ema_20 DOUBLE PRECISION,
                 ema_50 DOUBLE PRECISION,
                 rsi_14 DOUBLE PRECISION,
                 macd DOUBLE PRECISION,
+                macd_signal DOUBLE PRECISION,
+                macd_histogram DOUBLE PRECISION,
                 bollinger_upper DOUBLE PRECISION,
-                bollinger_lower DOUBLE PRECISION
+                bollinger_lower DOUBLE PRECISION,
+                bollinger_middle DOUBLE PRECISION,
+                atr DOUBLE PRECISION,
+                vwap DOUBLE PRECISION
             );
         ''')
-        
+        print("Creating daily_analytics table...")
         cur.execute('''
             CREATE TABLE IF NOT EXISTS daily_analytics (
                 symbol TEXT NOT NULL,
                 date DATE NOT NULL,
                 sma_20 DOUBLE PRECISION,
+                sma_50 DOUBLE PRECISION,
+                sma_200 DOUBLE PRECISION,
+                ema_20 DOUBLE PRECISION,
                 ema_50 DOUBLE PRECISION,
+                ema_200 DOUBLE PRECISION,
                 rsi_14 DOUBLE PRECISION,
                 macd DOUBLE PRECISION,
+                macd_signal DOUBLE PRECISION,
+                macd_histogram DOUBLE PRECISION,
                 bollinger_upper DOUBLE PRECISION,
-                bollinger_lower DOUBLE PRECISION
+                bollinger_lower DOUBLE PRECISION,
+                bollinger_middle DOUBLE PRECISION,
+                atr DOUBLE PRECISION,
+                vwap DOUBLE PRECISION
             );
         ''')
         
@@ -108,21 +140,26 @@ def init_db():
 
     # Create TimescaleDB hypertables
     try:
-        print("Creating hypertables for intraday analytics...")
-        cur.execute("ALTER TABLE intraday_analytics DROP CONSTRAINT IF EXISTS intraday_analytics_pkey;")
-        cur.execute("ALTER TABLE intraday_analytics ADD PRIMARY KEY (symbol, timestamp, interval_minutes);")
-        cur.execute("SELECT create_hypertable('intraday_analytics', 'timestamp', if_not_exists => TRUE, chunk_time_interval => interval '7 days');")
-        
-        # Create hypertable for daily_analytics
-        print("Creating hypertable for daily_analytics...")
-        cur.execute("ALTER TABLE daily_analytics DROP CONSTRAINT IF EXISTS daily_analytics_pkey;")
-        cur.execute("ALTER TABLE daily_analytics ADD PRIMARY KEY (symbol, date);")
-        cur.execute("SELECT create_hypertable('daily_analytics', 'date', if_not_exists => TRUE, chunk_time_interval => interval '1 month');")
+        # Create hypertable for intraday_analytics
+        if not hypertable_exists(cur, 'intraday_analytics'):
+            print("Creating hypertables for intraday analytics...")
+            cur.execute("ALTER TABLE intraday_analytics DROP CONSTRAINT IF EXISTS intraday_analytics_pkey;")
+            cur.execute("ALTER TABLE intraday_analytics ADD PRIMARY KEY (symbol, timestamp, interval_minutes);")
+            cur.execute("SELECT create_hypertable('intraday_analytics', 'timestamp', if_not_exists => TRUE, chunk_time_interval => interval '7 days');")
 
-        print("Creating hypertable for data_quality_issues...")
-        cur.execute("ALTER TABLE data_quality_issues DROP CONSTRAINT IF EXISTS data_quality_issues_pkey;")
-        cur.execute("ALTER TABLE data_quality_issues ADD PRIMARY KEY (id, timestamp);")
-        cur.execute("SELECT create_hypertable('data_quality_issues', 'timestamp', if_not_exists => TRUE);")
+        # Create hypertable for daily_analytics
+        if not hypertable_exists(cur, 'daily_analytics'):
+            print("Creating hypertable for daily_analytics...")
+            cur.execute("ALTER TABLE daily_analytics DROP CONSTRAINT IF EXISTS daily_analytics_pkey;")
+            cur.execute("ALTER TABLE daily_analytics ADD PRIMARY KEY (symbol, date);")
+            cur.execute("SELECT create_hypertable('daily_analytics', 'date', if_not_exists => TRUE, chunk_time_interval => interval '1 month');")
+        
+        # Create hypertable for data_quality_issues
+        if not hypertable_exists(cur, 'data_quality_issues'):
+            print("Creating hypertable for data_quality_issues...")
+            cur.execute("ALTER TABLE data_quality_issues DROP CONSTRAINT IF EXISTS data_quality_issues_pkey;")
+            cur.execute("ALTER TABLE data_quality_issues ADD PRIMARY KEY (id, timestamp);")
+            cur.execute("SELECT create_hypertable('data_quality_issues', 'timestamp', if_not_exists => TRUE);")
         conn.commit()
         print("Hypertables created successfully.")
     except psycopg2.Error as e:
@@ -201,19 +238,21 @@ def init_tiered_tables():
         ''')
 
         # Create hypertables
-        print("Creating hypertables...")
-        
-        cur.execute("ALTER TABLE realtime_prices DROP CONSTRAINT IF EXISTS realtime_prices_pkey;")
-        cur.execute("ALTER TABLE realtime_prices ADD PRIMARY KEY (id, timestamp);")
-        cur.execute("SELECT create_hypertable('realtime_prices', 'timestamp', if_not_exists => TRUE);")
-        
-        cur.execute("ALTER TABLE intraday_ohlcv DROP CONSTRAINT IF EXISTS intraday_ohlcv_pkey;")
-        cur.execute("ALTER TABLE intraday_ohlcv ADD PRIMARY KEY (symbol, timestamp, interval_minutes);")
-        cur.execute("SELECT create_hypertable('intraday_ohlcv', 'timestamp', if_not_exists => TRUE);")
-        
-        cur.execute("ALTER TABLE historical_ohlcv DROP CONSTRAINT IF EXISTS historical_ohlcv_pkey;")
-        cur.execute("ALTER TABLE historical_ohlcv ADD PRIMARY KEY (symbol, timestamp);")
-        cur.execute("SELECT create_hypertable('historical_ohlcv', 'timestamp', if_not_exists => TRUE);")
+        print("Creating hypertables for price tables...")
+        if not hypertable_exists(cur, 'realtime_prices'):
+            cur.execute("ALTER TABLE realtime_prices DROP CONSTRAINT IF EXISTS realtime_prices_pkey;")
+            cur.execute("ALTER TABLE realtime_prices ADD PRIMARY KEY (id, timestamp);")
+            cur.execute("SELECT create_hypertable('realtime_prices', 'timestamp', if_not_exists => TRUE);")
+
+        if not hypertable_exists(cur, 'intraday_ohlcv'):
+            cur.execute("ALTER TABLE intraday_ohlcv DROP CONSTRAINT IF EXISTS intraday_ohlcv_pkey;")
+            cur.execute("ALTER TABLE intraday_ohlcv ADD PRIMARY KEY (symbol, timestamp, interval_minutes);")
+            cur.execute("SELECT create_hypertable('intraday_ohlcv', 'timestamp', if_not_exists => TRUE);")
+
+        if not hypertable_exists(cur, 'historical_ohlcv'):
+            cur.execute("ALTER TABLE historical_ohlcv DROP CONSTRAINT IF EXISTS historical_ohlcv_pkey;")
+            cur.execute("ALTER TABLE historical_ohlcv ADD PRIMARY KEY (symbol, timestamp);")
+            cur.execute("SELECT create_hypertable('historical_ohlcv', 'timestamp', if_not_exists => TRUE);")
         conn.commit()
 
         # Create indexes
@@ -414,10 +453,10 @@ def recreate_db_schema():
     
     try:
         # Drop existing tables
-        cur.execute("DROP TABLE IF EXISTS analytics CASCADE")
+        cur.execute("DROP TABLE IF EXISTS intraday_analytics CASCADE")
+        cur.execute("DROP TABLE IF EXISTS daily_analytics CASCADE")
         cur.execute("DROP TABLE IF EXISTS data_quality_issues CASCADE")
         cur.execute("DROP TABLE IF EXISTS dead_letter_queue CASCADE")
-        cur.execute("DROP TABLE IF EXISTS prices CASCADE")
         cur.execute("DROP TABLE IF EXISTS historical_ohlc CASCADE")
         cur.execute("DROP TABLE IF EXISTS intraday_ohlcv CASCADE")
         cur.execute("DROP TABLE IF EXISTS realtime_prices CASCADE")

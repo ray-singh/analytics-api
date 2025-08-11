@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 import time
 import requests
 import io
+import yfinance as yf
 
 # Kafka configuration
 KAFKA_TOPIC = "stock_prices"
@@ -195,7 +196,7 @@ async def init_historical_data(symbols=["AAPL"], interval="5min", days_back=365)
 
 async def subscribe_and_produce(symbol: str, fetch_history=False, interval="5min"):
     """
-    Subscribe to real-time stock price updates and produce them to Kafka.
+    Subscribe to real-time stock price updates using yfinance WebSocket and produce them to Kafka.
     Optionally fetch historical data first using smart backfill.
     """
     # Smart backfill of historical data if requested
@@ -206,64 +207,73 @@ async def subscribe_and_produce(symbol: str, fetch_history=False, interval="5min
     # Start automatic consolidation task
     consolidation_task = asyncio.create_task(scheduled_consolidation(symbol))
     
-    # Set up real-time streaming
+    # Set up Kafka producer
     producer = AIOKafkaProducer(bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS)
     await producer.start()
-    loop = asyncio.get_event_loop()
-
-    def on_event(data):
-        if data["event"] == "price":
-            print(data)
-            price = float(data["price"])
-            timestamp = int(data["timestamp"])
-            # Use get() with default value to handle missing volume
-            volume = int(data.get("volume", 0))
-            event = {
-                "symbol": symbol,
-                "price": price,
-                "timestamp": timestamp,
-                "volume": volume
-            }
-
-            # Schedule the Kafka producer task on the main event loop
-            asyncio.run_coroutine_threadsafe(
-                handle_event(event, producer), loop
-            )
-
-    async def handle_event(event, producer):
-        """
-        Handle the event by producing it to Kafka and storing it in the database.
-        """
-        await producer.send_and_wait(KAFKA_TOPIC, json.dumps(event).encode())
-        print(f"Produced to Kafka: {event}")
-        insert_realtime_price(
-            symbol = event["symbol"], 
-            price = event["price"], 
-            timestamp = event["timestamp"], 
-            volume = event.get("day_volume", None), 
-            source = "TwelveData-Realtime"
-        )
-        
-    ws = td.websocket(
-        symbols=symbol,
-        on_event=on_event,
-        ssl_context=ssl.create_default_context(cafile=certifi.where())
-    )
-    ws.subscribe(symbol)
-    ws.connect()
 
     try:
-        while True:
-            ws.heartbeat()  # Send a heartbeat to keep the connection alive
-            await asyncio.sleep(10)
+        # Define the message handler for yfinance WebSocket
+        def message_handler(message):
+            """
+            Handle incoming WebSocket messages from yfinance.
+            """
+            try:
+                print(f"{message}")
+                # Parse the message
+                if message.get("id") == symbol:
+                    # Extract relevant fields
+                    price = float(message["price"])
+                    timestamp = int(message["time"]) // 1000  # Convert milliseconds to seconds
+                    volume = int(message.get("day_volume", 0))
+                    
+                    # Create the event
+                    event = {
+                        "symbol": symbol,
+                        "price": price,
+                        "timestamp": timestamp,
+                        "volume": volume
+                    }
+                    
+                    # Produce the event to Kafka
+                    asyncio.run_coroutine_threadsafe(
+                        handle_event(event, producer), asyncio.get_event_loop()
+                    )
+            except Exception as e:
+                print(f"Error processing WebSocket message: {e}")
+
+        # Start the yfinance WebSocket
+        print(f"Starting yfinance WebSocket for {symbol}...")
+        with yf.WebSocket() as ws:
+            ws.subscribe([symbol])
+            ws.listen(message_handler)
+
     except KeyboardInterrupt:
         print("Keyboard interrupt received, shutting down...")
         consolidation_task.cancel()
-        ws.close()
     except Exception as e:
-        print(f"Error in websocket connection: {e}")
+        print(f"Error in WebSocket connection: {e}")
     finally:
         await producer.stop()
+
+async def handle_event(event, producer):
+    """
+    Handle the event by producing it to Kafka and storing it in the database.
+    """
+    try:
+        # Produce the event to Kafka
+        await producer.send_and_wait(KAFKA_TOPIC, json.dumps(event).encode())
+        print(f"Produced to Kafka: {event}")
+        
+        # Insert the event into the database
+        insert_realtime_price(
+            symbol=event["symbol"],
+            price=event["price"],
+            timestamp=event["timestamp"],
+            volume=event.get("volume", None),
+            source="YFinance-Realtime"
+        )
+    except Exception as e:
+        print(f"Error handling event: {e}")
 
 async def detect_data_gaps(symbol: str, interval: str = "5min"):
     """
@@ -442,13 +452,33 @@ async def scheduled_consolidation(symbol):
     except Exception as e:
         print(f"Error in scheduled consolidation: {e}")
 
+from db import get_conn
+
 async def fetch_and_store_historical_ohlcv(symbol: str):
     """
     Fetch historical daily OHLCV data from Alpha Vantage and store it in the database.
+    If the symbol already has data in the historical_ohlcv table, skip fetching.
     
     Args:
         symbol: Stock symbol (e.g., 'AAPL')
     """
+    # Check if the symbol already has data in the historical_ohlcv table
+    conn = get_conn()
+    cur = conn.cursor()
+    try:
+        cur.execute("SELECT COUNT(*) FROM historical_ohlcv WHERE symbol = %s", (symbol,))
+        record_count = cur.fetchone()[0]
+        
+        if record_count > 0:
+            print(f"Data for {symbol} already exists in the historical_ohlcv table. Skipping fetch.")
+            return
+    except Exception as e:
+        print(f"Error checking existing data for {symbol}: {e}")
+        return
+    finally:
+        cur.close()
+        conn.close()
+
     # Fetch data from Alpha Vantage
     print(f"Fetching historical daily OHLCV data for {symbol}...")
     url = f"https://www.alphavantage.co/query?function=TIME_SERIES_DAILY&symbol={symbol}&outputsize=full&apikey={ALPHA_VANTAGE_API_KEY}&datatype=csv"

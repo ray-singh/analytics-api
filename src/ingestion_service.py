@@ -13,10 +13,11 @@ import time
 import requests
 import io
 import yfinance as yf
+import queue  # Add this import at the top
 
 # Kafka configuration
 KAFKA_TOPIC = "stock_prices"
-KAFKA_BOOTSTRAP_SERVERS = "localhost:9092"
+KAFKA_BOOTSTRAP_SERVERS = "localhost:9092" 
 
 load_dotenv()
 td = TDClient(apikey=os.getenv("TWELVEDATA_API_KEY"))
@@ -210,43 +211,42 @@ async def subscribe_and_produce(symbol: str, fetch_history=False, interval="5min
     # Set up Kafka producer
     producer = AIOKafkaProducer(bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS)
     await producer.start()
-
+    
     try:
-        # Define the message handler for yfinance WebSocket
-        def message_handler(message):
-            """
-            Handle incoming WebSocket messages from yfinance.
-            """
-            try:
-                print(f"{message}")
-                # Parse the message
-                if message.get("id") == symbol:
-                    # Extract relevant fields
-                    price = float(message["price"])
-                    timestamp = int(message["time"]) // 1000  # Convert milliseconds to seconds
-                    volume = int(message.get("day_volume", 0))
-                    
-                    # Create the event
-                    event = {
-                        "symbol": symbol,
-                        "price": price,
-                        "timestamp": timestamp,
-                        "volume": volume
-                    }
-                    
-                    # Produce the event to Kafka
-                    asyncio.run_coroutine_threadsafe(
-                        handle_event(event, producer), asyncio.get_event_loop()
-                    )
-            except Exception as e:
-                print(f"Error processing WebSocket message: {e}")
+        # Define the async message handler
+        async def message_handler(message):
+            if message.get("id") == symbol:
+                # Extract fields
+                price = float(message["price"])
+                timestamp = int(message["time"]) // 1000
+                volume = int(message["day_volume"])
 
-        # Start the yfinance WebSocket
-        print(f"Starting yfinance WebSocket for {symbol}...")
-        with yf.WebSocket() as ws:
-            ws.subscribe([symbol])
-            ws.listen(message_handler)
-
+                event = {
+                    "symbol": symbol, 
+                    "price": price,
+                    "timestamp": timestamp,
+                    "volume": volume
+                }
+                
+                # Insert into database
+                insert_realtime_price(
+                    symbol=event["symbol"],
+                    price=event["price"],
+                    timestamp=event["timestamp"],
+                    volume=event.get("volume", None),
+                    source="YFinance-Realtime"
+                )
+                
+                # Send directly to Kafka - no threading issues!
+                await producer.send_and_wait(KAFKA_TOPIC, json.dumps(event).encode())
+                print(f"✅ Successfully produced to Kafka: {event}")
+        
+        # Use the async WebSocket client directly
+        print(f"Starting yfinance AsyncWebSocket for {symbol}...")
+        async with yf.AsyncWebSocket() as ws:
+            await ws.subscribe([symbol])
+            await ws.listen(message_handler)
+            
     except KeyboardInterrupt:
         print("Keyboard interrupt received, shutting down...")
         consolidation_task.cancel()
@@ -255,10 +255,21 @@ async def subscribe_and_produce(symbol: str, fetch_history=False, interval="5min
     finally:
         await producer.stop()
 
+async def process_events(queue, producer):
+    """
+    Process events from the queue.
+    """
+    while True:
+        event = await queue.get()
+        print(f"Processing event from queue: {event}")
+        await handle_event(event, producer)
+        queue.task_done()
+
 async def handle_event(event, producer):
     """
     Handle the event by producing it to Kafka and storing it in the database.
     """
+    print(f"Handling event: {event}")
     try:
         # Produce the event to Kafka
         await producer.send_and_wait(KAFKA_TOPIC, json.dumps(event).encode())
@@ -514,9 +525,48 @@ async def fetch_and_store_historical_ohlcv(symbol: str):
     except Exception as e:
         print(f"Error fetching or storing data for {symbol}: {e}")
 
+async def test_kafka_connection():
+    """Test Kafka connection with both simple and stock data messages."""
+    print(f"Testing Kafka connection to {KAFKA_BOOTSTRAP_SERVERS}...")
+    try:
+        producer = AIOKafkaProducer(
+            bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS,
+            request_timeout_ms=10000
+        )
+        await producer.start()
+        print("✅ Successfully connected to Kafka!")
+        
+        # Send a simple test message
+        await producer.send_and_wait(KAFKA_TOPIC, b"test_connection")
+        print(f"✅ Successfully sent simple test message to topic {KAFKA_TOPIC}")
+        
+        # Send a test message that mimics actual stock data
+        test_event = {
+            "symbol": "TEST",
+            "price": 150.25,
+            "timestamp": int(time.time()),
+            "volume": 1000
+        }
+        await producer.send_and_wait(KAFKA_TOPIC, json.dumps(test_event).encode())
+        print(f"✅ Successfully sent stock data test message to topic {KAFKA_TOPIC}")
+        
+        await producer.stop()
+        return True
+    except Exception as e:
+        print(f"❌ Kafka connection failed: {type(e).__name__}: {e}")
+        import traceback
+        traceback.print_exc()
+        return False
+
+# Add this call at the beginning of your main function
 if __name__ == "__main__":
     from db import init_db
     init_db()
+    
+    # Test Kafka connection first
+    if not asyncio.run(test_kafka_connection()):
+        print("WARNING: Kafka connection failed. Real-time data will not be sent to Kafka.")
+    
     asyncio.run(fetch_and_store_historical_ohlcv('AAPL'))
     asyncio.run(subscribe_and_produce(
         symbol="AAPL", 

@@ -18,7 +18,7 @@ KAFKA_BOOTSTRAP_SERVERS = "localhost:9092"
 
 # Initialize indicators engine
 indicators_engine = TechnicalIndicators()
-
+print("Analytics service script started.")
 # Maintain price history and window sizes
 symbol_prices = defaultdict(lambda: deque(maxlen=100))  # Increased for longer indicators
 symbol_timestamps = defaultdict(list)
@@ -37,6 +37,7 @@ async def consume_and_analyze():
         auto_offset_reset="latest"
     )
     
+    # Create a SINGLE producer for the entire service
     producer = AIOKafkaProducer(bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS)
     
     await consumer.start()
@@ -71,7 +72,8 @@ async def consume_and_analyze():
                 # Only calculate indicators when we have enough data points
                 min_window = min(INTRADAY_WINDOWS)
                 if len(symbol_prices[symbol]) >= min_window:
-                    await calculate_intraday_indicators(symbol, timestamp)
+                    # Pass the producer to the function
+                    await calculate_intraday_indicators(symbol, timestamp, producer)
                     
             except Exception as e:
                 logger.error(f"Error processing message: {e}", exc_info=True)
@@ -85,7 +87,7 @@ async def consume_and_analyze():
         await consumer.stop()
         await producer.stop()
 
-async def calculate_intraday_indicators(symbol, timestamp):
+async def calculate_intraday_indicators(symbol, timestamp, producer):
     """Calculate intraday technical indicators and store in database"""
     try:
         # Get timestamp as datetime
@@ -134,16 +136,18 @@ async def calculate_intraday_indicators(symbol, timestamp):
         print(f"Indicators for {symbol} at {rounded_timestamp}: {indicators}")
         # Only store if we have at least some indicators calculated
         if indicators:
+            logger.info(f"Inserting indicators for {symbol} at {rounded_timestamp}")
             # Store in database
-            insert_intraday_analytics(
-                symbol=symbol,
-                timestamp=rounded_timestamp,
-                interval_minutes=5,
-                **indicators
-            )
-            
-            # Log the calculation
-            logger.info(f"Calculated intraday indicators for {symbol} at {rounded_timestamp}")
+            try:
+                insert_intraday_analytics(
+                    symbol=symbol,
+                    timestamp=rounded_timestamp,
+                    interval_minutes=5,
+                    **indicators
+                )
+                logger.info(f"Successfully inserted intraday indicators for {symbol} at {rounded_timestamp}")
+            except Exception as db_error:
+                logger.error(f"Database error: {db_error}", exc_info=True)
             
             # Create analytics event for Kafka
             analytics_event = {
@@ -153,14 +157,11 @@ async def calculate_intraday_indicators(symbol, timestamp):
                 "indicators": indicators
             }
             
-            # Publish to Kafka
-            producer = AIOKafkaProducer(bootstrap_servers=KAFKA_BOOTSTRAP_SERVERS)
-            await producer.start()
+            # Use the passed producer instead of creating a new one
             await producer.send_and_wait(
                 KAFKA_TOPIC_OUT, 
                 json.dumps(analytics_event).encode()
             )
-            await producer.stop()
             
     except Exception as e:
         logger.error(f"Error calculating intraday indicators for {symbol}: {e}", exc_info=True)
@@ -273,7 +274,7 @@ async def calculate_daily_indicators():
                     
                     except Exception as e:
                         logger.error(f"Error calculating daily indicators for {symbol}: {e}", exc_info=True)
-                
+                print(daily_indicators)
                 # Sleep until tomorrow
                 tomorrow = (now + timedelta(days=1)).replace(hour=16, minute=30, second=0)
                 sleep_seconds = (tomorrow - now).total_seconds()

@@ -39,6 +39,17 @@ def get_conn():
         password=DB_PASSWORD
     )
 
+def check_table_exists(cur, table_name):
+    '''Check if a table exists in the database.'''
+    cur.execute("""
+        SELECT EXISTS (
+            SELECT 1
+            FROM information_schema.tables
+            WHERE table_name = %s
+        );
+    """, (table_name,))
+    return cur.fetchone()[0]
+
 def hypertable_exists(cur, table_name):
     '''Check if a TimescaleDB hypertable exists.'''
     cur.execute("""
@@ -59,81 +70,81 @@ def init_db():
 
     # Create tables
     try:
-        print("Creating tables...")
-    
-        # Replace generic analytics table with specialized tables
-        print("Creating intraday_analytics table...")
-        cur.execute('''
-            CREATE TABLE IF NOT EXISTS intraday_analytics (
-                symbol TEXT NOT NULL,
-                timestamp TIMESTAMPTZ NOT NULL,
-                interval_minutes INTEGER NOT NULL DEFAULT 5,
-                sma_5 DOUBLE PRECISION,
-                sma_10 DOUBLE PRECISION,
-                sma_20 DOUBLE PRECISION,
-                sma_50 DOUBLE PRECISION,
-                ema_5 DOUBLE PRECISION,
-                ema_10 DOUBLE PRECISION,
-                ema_20 DOUBLE PRECISION,
-                ema_50 DOUBLE PRECISION,
-                rsi_14 DOUBLE PRECISION,
-                macd DOUBLE PRECISION,
-                macd_signal DOUBLE PRECISION,
-                macd_histogram DOUBLE PRECISION,
-                bollinger_upper DOUBLE PRECISION,
-                bollinger_lower DOUBLE PRECISION,
-                bollinger_middle DOUBLE PRECISION,
-                atr DOUBLE PRECISION,
-                vwap DOUBLE PRECISION
-            );
-        ''')
-        print("Creating daily_analytics table...")
-        cur.execute('''
-            CREATE TABLE IF NOT EXISTS daily_analytics (
-                symbol TEXT NOT NULL,
-                date DATE NOT NULL,
-                sma_20 DOUBLE PRECISION,
-                sma_50 DOUBLE PRECISION,
-                sma_200 DOUBLE PRECISION,
-                ema_20 DOUBLE PRECISION,
-                ema_50 DOUBLE PRECISION,
-                ema_200 DOUBLE PRECISION,
-                rsi_14 DOUBLE PRECISION,
-                macd DOUBLE PRECISION,
-                macd_signal DOUBLE PRECISION,
-                macd_histogram DOUBLE PRECISION,
-                bollinger_upper DOUBLE PRECISION,
-                bollinger_lower DOUBLE PRECISION,
-                bollinger_middle DOUBLE PRECISION,
-                atr DOUBLE PRECISION,
-                vwap DOUBLE PRECISION
-            );
-        ''')
-        
-        cur.execute('''
-            CREATE TABLE IF NOT EXISTS data_quality_issues (
-                id SERIAL PRIMARY KEY,
-                symbol TEXT,
-                issue_type TEXT NOT NULL,
-                description TEXT NOT NULL,
-                severity TEXT NOT NULL,
-                timestamp TIMESTAMPTZ NOT NULL,
-                metadata JSONB,
-                created_at TIMESTAMPTZ DEFAULT NOW()
-            );
-        ''')
-        cur.execute('''
-            CREATE TABLE IF NOT EXISTS dead_letter_queue (
-                id SERIAL PRIMARY KEY,
-                original_data JSONB NOT NULL,
-                issues JSONB NOT NULL,
-                timestamp TIMESTAMPTZ NOT NULL,
-                processed BOOLEAN DEFAULT FALSE,
-                created_at TIMESTAMPTZ DEFAULT NOW()
-            );
-        ''')
+        if not check_table_exists(cur, 'intraday_analytics'):
+            print("Creating intraday_analytics table...")
+            cur.execute('''
+                CREATE TABLE intraday_analytics (
+                    symbol TEXT NOT NULL,
+                    timestamp TIMESTAMPTZ NOT NULL,
+                    interval_minutes INTEGER NOT NULL DEFAULT 5,
+                    sma_5 DOUBLE PRECISION,
+                    sma_10 DOUBLE PRECISION,
+                    sma_20 DOUBLE PRECISION,
+                    sma_50 DOUBLE PRECISION,
+                    ema_5 DOUBLE PRECISION,
+                    ema_10 DOUBLE PRECISION,
+                    ema_20 DOUBLE PRECISION,
+                    ema_50 DOUBLE PRECISION,
+                    rsi_14 DOUBLE PRECISION,
+                    macd DOUBLE PRECISION,
+                    macd_signal DOUBLE PRECISION,
+                    macd_histogram DOUBLE PRECISION,
+                    bollinger_upper DOUBLE PRECISION,
+                    bollinger_lower DOUBLE PRECISION,
+                    bollinger_middle DOUBLE PRECISION,
+                    atr DOUBLE PRECISION,
+                    vwap DOUBLE PRECISION
+                );
+            ''')
+        if not check_table_exists(cur, 'daily_analytics'):
+            print("Creating daily_analytics table...")
+            cur.execute('''
+                CREATE TABLE IF NOT EXISTS daily_analytics (
+                    symbol TEXT NOT NULL,
+                    date DATE NOT NULL,
+                    sma_20 DOUBLE PRECISION,
+                    sma_50 DOUBLE PRECISION,
+                    sma_200 DOUBLE PRECISION,
+                    ema_20 DOUBLE PRECISION,
+                    ema_50 DOUBLE PRECISION,
+                    ema_200 DOUBLE PRECISION,
+                    rsi_14 DOUBLE PRECISION,
+                    macd DOUBLE PRECISION,
+                    macd_signal DOUBLE PRECISION,
+                    macd_histogram DOUBLE PRECISION,
+                    bollinger_upper DOUBLE PRECISION,
+                    bollinger_lower DOUBLE PRECISION,
+                    bollinger_middle DOUBLE PRECISION,
+                    atr DOUBLE PRECISION,
+                    vwap DOUBLE PRECISION
+                );
+            ''')
+        if not check_table_exists(cur, 'data_quality_issues'):
+            cur.execute('''
+                CREATE TABLE IF NOT EXISTS data_quality_issues (
+                    id SERIAL PRIMARY KEY,
+                    symbol TEXT,
+                    issue_type TEXT NOT NULL,
+                    description TEXT NOT NULL,
+                    severity TEXT NOT NULL,
+                    timestamp TIMESTAMPTZ NOT NULL,
+                    metadata JSONB,
+                    created_at TIMESTAMPTZ DEFAULT NOW()
+                );
+                ''')
+        if not check_table_exists(cur, 'dead_letter_queue'):
+            print("Creating dead_letter_queue table...")
+            cur.execute('''
+                CREATE TABLE IF NOT EXISTS dead_letter_queue (
+                    id SERIAL PRIMARY KEY,
+                    original_data JSONB NOT NULL,
+                    issues JSONB NOT NULL,
+                    timestamp TIMESTAMPTZ NOT NULL,
+                    processed BOOLEAN DEFAULT FALSE,
+                    created_at TIMESTAMPTZ DEFAULT NOW()
+                );
+            ''')
         conn.commit()
-        print("Tables created successfully.")
     except Exception as e:
         print(f"Error creating tables: {e}")
         conn.rollback()
@@ -168,7 +179,6 @@ def init_db():
 
     # Create indexes
     try:
-        print("Creating indexes...")
         cur.execute('''
             CREATE INDEX IF NOT EXISTS idx_intraday_analytics_symbol ON intraday_analytics(symbol);
             CREATE INDEX IF NOT EXISTS idx_daily_analytics_symbol ON daily_analytics(symbol);
@@ -188,9 +198,7 @@ def init_tiered_tables():
     conn = get_conn()
     cur = conn.cursor()
 
-    try:
-        print("Creating three-tier data architecture tables...")
-        
+    try:        
         # 1. Real-time prices table (volatile)
         cur.execute('''
             CREATE TABLE IF NOT EXISTS realtime_prices (
@@ -199,10 +207,11 @@ def init_tiered_tables():
                 price DOUBLE PRECISION NOT NULL,
                 volume BIGINT,
                 timestamp TIMESTAMPTZ NOT NULL,
-                source TEXT DEFAULT 'TwelveData',
+                source TEXT DEFAULT 'YFinance',
                 created_at TIMESTAMPTZ DEFAULT NOW()
             );
         ''')
+        cur.execute('''SET timezone = 'America/New_York';''')
         
         # 2. Intraday OHLCV table (non-volatile)
         cur.execute('''
@@ -469,29 +478,32 @@ def recreate_db_schema():
     finally:
         conn.close()
 
-def insert_realtime_price(symbol, price, timestamp, volume=None, source="TwelveData"):
+def insert_realtime_price(symbol, price, timestamp, volume=None, source="YFinance-Realtime"):
     """
-    Insert a new real-time price record into the volatile realtime_prices table.
-    
-    Args:
-        symbol (str): Stock symbol (e.g., 'AAPL', 'MSFT')
-        price (float): Current stock price
-        timestamp (float): Unix timestamp when price was recorded
-        volume (int, optional): Trading volume
-        source (str): Data source (default: 'TwelveData')
+    Insert a new real-time price record with proper EST timezone conversion
     """
     conn = get_conn()
     cur = conn.cursor()
-    
+    print(f"Inserting real-time price for {symbol} at timestamp {timestamp}", flush=True)
     try:
+        # Set timezone for this connection
+        cur.execute("SET timezone = 'America/New_York';")
+        
+        # Insert with timezone conversion from UTC to Eastern Time
         cur.execute(
-            "INSERT INTO realtime_prices (symbol, price, volume, timestamp, source) VALUES (%s, %s, %s, to_timestamp(%s), %s)",
+            """
+            INSERT INTO realtime_prices 
+            (symbol, price, volume, timestamp, source) 
+            VALUES (%s, %s, %s, 
+                    (to_timestamp(%s) AT TIME ZONE 'UTC') AT TIME ZONE 'America/New_York', 
+                    %s)
+            """,
             (symbol, price, volume, timestamp, source)
         )
-        print(f"Inserted real-time price for {symbol} at {datetime.fromtimestamp(timestamp)}: {price}")
+        print(f"Successfully inserted real-time price for {symbol}: {price}", flush=True)
         conn.commit()
     except Exception as e:
-        print(f"Error inserting real-time price: {e}")
+        print(f"Error inserting real-time price: {e}", flush=True)
         conn.rollback()
     finally:
         cur.close()
@@ -822,13 +834,6 @@ def clean_realtime_data(idle_minutes=60):
 def insert_intraday_analytics(symbol, timestamp, interval_minutes=5, **indicators):
     """
     Insert technical indicators for intraday data.
-    
-    Args:
-        symbol (str): Stock symbol
-        timestamp (float or datetime): Timestamp for the indicators
-        interval_minutes (int): Time interval in minutes (default: 5)
-        **indicators: Key-value pairs of indicator names and values
-                      (e.g., sma_20=123.45, rsi_14=65.4)
     """
     if isinstance(timestamp, (int, float)):
         timestamp = datetime.fromtimestamp(timestamp)
@@ -837,6 +842,9 @@ def insert_intraday_analytics(symbol, timestamp, interval_minutes=5, **indicator
     cur = conn.cursor()
     
     try:
+        # Set timezone for this connection
+        cur.execute("SET timezone = 'America/New_York';")
+        
         # Build dynamic query with only the indicators that are provided
         columns = ["symbol", "timestamp", "interval_minutes"]
         values = [symbol, timestamp, interval_minutes]
@@ -918,6 +926,7 @@ def insert_daily_analytics(symbol, date, **indicators):
         print(f"Error inserting daily analytics: {e}")
         conn.rollback()
     finally:
+        print(f"Inserted daily analytics for {symbol} on {date}")
         cur.close()
         conn.close()
 

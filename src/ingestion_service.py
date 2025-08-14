@@ -1,19 +1,18 @@
 import asyncio
 import json
-import ssl
-import certifi
 import os
 import pandas as pd
 from twelvedata import TDClient
 from aiokafka import AIOKafkaProducer
-from db import insert_realtime_price, insert_intraday_ohlcv, insert_historical_daily
+from db import init_db, insert_realtime_price, insert_intraday_ohlcv, insert_historical_daily, get_conn, consolidate_realtime_to_intraday, consolidate_intraday_to_daily, clean_realtime_data
 from dotenv import load_dotenv
 from datetime import datetime, timedelta
 import time
 import requests
 import io
 import yfinance as yf
-import queue  # Add this import at the top
+import pytz
+import traceback
 
 # Kafka configuration
 KAFKA_TOPIC = "stock_prices"
@@ -24,7 +23,7 @@ td = TDClient(apikey=os.getenv("TWELVEDATA_API_KEY"))
 ALPHA_VANTAGE_API_KEY = os.getenv("ALPHA_VANTAGE_API_KEY")
 
 async def fetch_historic_intraday_data_chunked(symbol: str, interval: str = "5min", 
-                                             start_date: str = "2024-01-01", 
+                                             start_date: str = "2024-01-01 00:00:00", 
                                              end_date: str = None,
                                              chunk_days: int = 60):
     """
@@ -33,8 +32,8 @@ async def fetch_historic_intraday_data_chunked(symbol: str, interval: str = "5mi
     Args:
         symbol: Stock symbol to fetch data for
         interval: Data interval (e.g., '1min', '5min', '15min')
-        start_date: Start date for the data in 'YYYY-MM-DD' format
-        end_date: End date for the data in 'YYYY-MM-DD' format (defaults to yesterday)
+        start_date: Start date for the data in 'YYYY-MM-DD HH:MM:SS' format
+        end_date: End date for the data in 'YYYY-MM-DD HH:MM:SS' format (defaults to yesterday)
         chunk_days: Number of days to fetch in each API call (default: 60 days ~ 2 months)
         
     Returns:
@@ -42,13 +41,22 @@ async def fetch_historic_intraday_data_chunked(symbol: str, interval: str = "5mi
     """
     # Set end date to yesterday if not specified
     if end_date is None:
-        end_date = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
+        end_date = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d %H:%M:%S')
 
     # Convert dates to datetime objects for easier manipulation
-    start_dt = datetime.strptime(start_date, '%Y-%m-%d')
-    end_dt = datetime.strptime(end_date, '%Y-%m-%d')
-    
-    # Initialize dictionary to store data chunks
+    try:
+        start_dt = datetime.strptime(start_date, '%Y-%m-%d %H:%M:%S')
+    except ValueError:
+        start_dt = datetime.strptime(start_date, '%Y-%m-%d')
+        
+    try:
+        # Try to parse with time component first
+        end_dt = datetime.strptime(end_date, '%Y-%m-%d %H:%M:%S') if end_date else datetime.now() - timedelta(days=1)
+    except ValueError:
+        # Fall back to date-only format
+        end_dt = datetime.strptime(end_date, '%Y-%m-%d') if end_date else datetime.now() - timedelta(days=1)
+
+    # Dictionary to store data chunks
     data_chunks = {}
     
     # Calculate total number of API calls needed
@@ -60,7 +68,6 @@ async def fetch_historic_intraday_data_chunked(symbol: str, interval: str = "5mi
     
     # Track API calls for rate limiting
     api_calls = 0
-    
     # Process data in chunks
     current_start = start_dt
     chunk_num = 1
@@ -70,12 +77,10 @@ async def fetch_historic_intraday_data_chunked(symbol: str, interval: str = "5mi
         current_end = min(current_start + timedelta(days=chunk_days), end_dt)
         
         # Format dates for API call
-        chunk_start_str = current_start.strftime('%Y-%m-%d')
-        chunk_end_str = current_end.strftime('%Y-%m-%d')
-        
+        chunk_start_str = current_start.strftime('%Y-%m-%d %H:%M:%S')
+        chunk_end_str = current_end.strftime('%Y-%m-%d %H:%M:%S')
+
         print(f"Fetching chunk {chunk_num}/{num_chunks}: {chunk_start_str} to {chunk_end_str}")
-        
-        # Make API call
         try:
             ts = td.time_series(
                 symbol=symbol,
@@ -172,29 +177,6 @@ async def store_historical_intraday_data(symbol, data_df, interval):
     
     print(f"Successfully inserted {count} historical records for {symbol}")
 
-async def init_historical_data(symbols=["AAPL"], interval="5min", days_back=365):
-    """
-    Initialize historical intraday data for one or more symbols.
-    
-    Args:
-        symbols: List of stock symbols to fetch data for
-        interval: Data interval (e.g., '5min')
-        days_back: How many days of historical data to fetch
-    """
-    start_date = (datetime.now() - timedelta(days=days_back)).strftime('%Y-%m-%d')
-    end_date = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
-    
-    for symbol in symbols:
-        print(f"Initializing historical {interval} data for {symbol}...")
-        await fetch_historic_intraday_data_chunked(
-            symbol=symbol,
-            interval=interval,
-            start_date=start_date,
-            end_date=end_date
-        )
-        # Add a short delay between symbols
-        await asyncio.sleep(5)
-
 async def subscribe_and_produce(symbol: str, fetch_history=False, interval="5min"):
     """
     Subscribe to real-time stock price updates using yfinance WebSocket and produce them to Kafka.
@@ -213,10 +195,8 @@ async def subscribe_and_produce(symbol: str, fetch_history=False, interval="5min
     await producer.start()
     
     try:
-        # Define the async message handler
         async def message_handler(message):
             if message.get("id") == symbol:
-                # Extract fields
                 price = float(message["price"])
                 timestamp = int(message["time"]) // 1000
                 volume = int(message["day_volume"])
@@ -228,7 +208,6 @@ async def subscribe_and_produce(symbol: str, fetch_history=False, interval="5min
                     "volume": volume
                 }
                 
-                # Insert into database
                 insert_realtime_price(
                     symbol=event["symbol"],
                     price=event["price"],
@@ -237,7 +216,7 @@ async def subscribe_and_produce(symbol: str, fetch_history=False, interval="5min
                     source="YFinance-Realtime"
                 )
                 
-                # Send directly to Kafka - no threading issues!
+                # Send directly to Kafka 
                 await producer.send_and_wait(KAFKA_TOPIC, json.dumps(event).encode())
                 print(f"✅ Successfully produced to Kafka: {event}")
         
@@ -255,37 +234,6 @@ async def subscribe_and_produce(symbol: str, fetch_history=False, interval="5min
     finally:
         await producer.stop()
 
-async def process_events(queue, producer):
-    """
-    Process events from the queue.
-    """
-    while True:
-        event = await queue.get()
-        print(f"Processing event from queue: {event}")
-        await handle_event(event, producer)
-        queue.task_done()
-
-async def handle_event(event, producer):
-    """
-    Handle the event by producing it to Kafka and storing it in the database.
-    """
-    print(f"Handling event: {event}")
-    try:
-        # Produce the event to Kafka
-        await producer.send_and_wait(KAFKA_TOPIC, json.dumps(event).encode())
-        print(f"Produced to Kafka: {event}")
-        
-        # Insert the event into the database
-        insert_realtime_price(
-            symbol=event["symbol"],
-            price=event["price"],
-            timestamp=event["timestamp"],
-            volume=event.get("volume", None),
-            source="YFinance-Realtime"
-        )
-    except Exception as e:
-        print(f"Error handling event: {e}")
-
 async def detect_data_gaps(symbol: str, interval: str = "5min"):
     """
     Detect gaps in historical intraday data and determine what data needs to be fetched.
@@ -297,9 +245,6 @@ async def detect_data_gaps(symbol: str, interval: str = "5min"):
     Returns:
         dict: Information about data gaps and what to fetch
     """
-    from db import get_conn
-    
-    # Convert interval string to minutes for database query
     interval_mins = {
         "1min": 1, "5min": 5, "15min": 15, "30min": 30, 
         "1h": 60, "4h": 240
@@ -311,17 +256,15 @@ async def detect_data_gaps(symbol: str, interval: str = "5min"):
     try:
         print(f"Checking existing data for {symbol} at {interval} interval...")
         
-        # Find the most recent data point
+        # Find most recent data point
         cur.execute(
-            "SELECT MAX(timestamp) FROM intraday_ohlcv WHERE symbol = %s AND interval_minutes = %s",
-            (symbol, interval_mins)
+            "SELECT * FROM intraday_ohlcv ORDER BY id DESC LIMIT 1"
         )
-        latest_timestamp = cur.fetchone()[0]
+        latest_timestamp = cur.fetchone()[2]
         
-        # Find the oldest data point
+        # Find oldest data point
         cur.execute(
-            "SELECT MIN(timestamp) FROM intraday_ohlcv WHERE symbol = %s AND interval_minutes = %s",
-            (symbol, interval_mins)
+            "SELECT * FROM intraday_ohlcv ORDER BY id ASC LIMIT 1"
         )
         oldest_timestamp = cur.fetchone()[0]
         
@@ -332,8 +275,7 @@ async def detect_data_gaps(symbol: str, interval: str = "5min"):
         )
         record_count = cur.fetchone()[0]
         
-        # Current time and yesterday (as we generally don't want to fetch current day data)
-        now = datetime.now()
+        now = datetime.now(pytz.timezone("America/New_York"))
         yesterday = now - timedelta(days=1)
         
         # Calculate what data we need to fetch
@@ -341,26 +283,26 @@ async def detect_data_gaps(symbol: str, interval: str = "5min"):
             # No data exists - need to do a full backfill
             status = "full_backfill"
             # Default to 1 year of data
-            start_date = (yesterday - timedelta(days=365)).strftime('%Y-%m-%d')
-            end_date = yesterday.strftime('%Y-%m-%d')
+            start_date = (yesterday - timedelta(days=365)).strftime('%Y-%m-%d %H:%M:%S')
+            end_date = now.strftime('%Y-%m-%d %H:%M:%S')
             gap_days = 365
             
             print(f"No existing data found for {symbol} at {interval} interval.")
             print(f"Will perform full backfill from {start_date} to {end_date}")
             
         else:
-            # Some data exists - need to check if it's up to date
+            # Some data exists - check if it's up to date
             latest_date = latest_timestamp.date()
-            yesterday_date = yesterday.date()
-            
-            if latest_date < yesterday_date:
+            now_date = now.date()
+
+            if latest_date < now_date:
                 # Data needs updating - fill the gap
                 status = "update"
                 # Start from the day after our latest data
-                start_date = (latest_timestamp + timedelta(days=1)).strftime('%Y-%m-%d')
-                end_date = yesterday.strftime('%Y-%m-%d')
-                gap_days = (yesterday_date - latest_date).days
-                
+                start_date = (latest_timestamp + timedelta(days=1)).strftime('%Y-%m-%d %H:%M:%S')
+                end_date = now.strftime('%Y-%m-%d %H:%M:%S')
+                gap_days = (now_date - latest_date).days
+
                 print(f"Data gap detected for {symbol}: from {start_date} to {end_date}")
                 print(f"Missing approximately {gap_days} days of data")
                 
@@ -436,8 +378,6 @@ async def scheduled_consolidation(symbol):
     """
     Periodically consolidate real-time data to intraday and intraday to historical.
     """
-    from db import consolidate_realtime_to_intraday, consolidate_intraday_to_daily, clean_realtime_data
-    
     try:
         print(f"Starting scheduled data consolidation for {symbol}")
         while True:
@@ -462,8 +402,6 @@ async def scheduled_consolidation(symbol):
         print("Consolidation task cancelled")
     except Exception as e:
         print(f"Error in scheduled consolidation: {e}")
-
-from db import get_conn
 
 async def fetch_and_store_historical_ohlcv(symbol: str):
     """
@@ -499,8 +437,6 @@ async def fetch_and_store_historical_ohlcv(symbol: str):
         if response.status_code != 200:
             print(f"Error fetching data for {symbol}: {response.status_code} - {response.text}")
             return
-        
-        # Parse the CSV response into a DataFrame
         data = pd.read_csv(io.StringIO(response.text))
         if data.empty:
             print(f"No data returned for {symbol}.")
@@ -554,13 +490,10 @@ async def test_kafka_connection():
         return True
     except Exception as e:
         print(f"❌ Kafka connection failed: {type(e).__name__}: {e}")
-        import traceback
         traceback.print_exc()
         return False
 
-# Add this call at the beginning of your main function
 if __name__ == "__main__":
-    from db import init_db
     init_db()
     
     # Test Kafka connection first

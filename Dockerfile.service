@@ -1,0 +1,25 @@
+ARG BASE_IMAGE=analytics-api-base:latest
+
+FROM ${BASE_IMAGE}
+
+# Args that can be passed during build
+ARG SERVICE_NAME
+ARG SERVICE_PATH=services/${SERVICE_NAME}/src
+
+# Set environment variables
+ENV SERVICE_NAME=${SERVICE_NAME}
+ENV PYTHONPATH=/app
+
+# Create requirements.txt directory structure
+WORKDIR /app
+
+# Copy service code and shared libraries - this avoids the need for the error redirection
+COPY services/${SERVICE_NAME} /app/services/${SERVICE_NAME}
+COPY libs /app/libs
+COPY scripts /app/scripts
+
+# Install service-specific requirements if they exist (using bash for conditional logic)
+RUN bash -c 'if [ -f /app/services/${SERVICE_NAME}/requirements.txt ]; then pip install --no-cache-dir -r /app/services/${SERVICE_NAME}/requirements.txt; fi'
+
+# Set default command to run the service
+CMD ["sh", "-c", "python -m services.${SERVICE_NAME}.src.service"]

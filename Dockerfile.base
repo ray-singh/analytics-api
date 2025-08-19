@@ -1,0 +1,32 @@
+FROM python:3.11-slim
+
+# Set environment variables
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/app
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    libpq-dev \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set working directory
+WORKDIR /app
+
+# Copy requirements first for better layer caching
+COPY requirements-base.txt .
+RUN pip install --no-cache-dir -r requirements-base.txt
+
+# Copy scripts and libs directories
+COPY scripts /app/scripts
+COPY libs /app/libs
+
+# Set up non-root user for security
+RUN groupadd -r appuser && useradd --no-log-init -r -g appuser appuser
+RUN mkdir -p /app/data && chown -R appuser:appuser /app
+USER appuser
+
+# Set default command
+CMD ["python", "-m", "scripts.env_check"]

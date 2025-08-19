@@ -1,0 +1,10 @@
+FROM analytics-api-base:latest
+
+WORKDIR /app
+
+# Copy scripts and shared libs
+COPY scripts /app/scripts
+COPY libs /app/libs
+
+# Set default command (will be overridden by docker-compose)
+CMD ["python", "-m", "scripts.env_check"]

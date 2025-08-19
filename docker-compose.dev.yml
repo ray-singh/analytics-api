@@ -1,0 +1,105 @@
+services:
+  # Development overrides for infrastructure services
+  kafka:
+    ports:
+      - "9092:9092"
+      - "9093:9093"  # For external clients
+    environment:
+      - KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://kafka:9092,EXTERNAL://localhost:9093
+      - KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP=PLAINTEXT:PLAINTEXT,EXTERNAL:PLAINTEXT
+      - KAFKA_CFG_LISTENERS=PLAINTEXT://:9092,EXTERNAL://:9093
+
+  timescaledb:
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_PASSWORD=password  # More explicit for dev
+      - POSTGRES_USER=postgres
+      - POSTGRES_DB=stockanalytics
+    volumes:
+      - timescaledb_data:/var/lib/postgresql/data
+
+  # Development overrides for application services
+  market-data:
+    build:
+      context: .
+      dockerfile: Dockerfile.service
+      args:
+        SERVICE_NAME: market_data
+    volumes:
+      - ./services/market_data:/app/services/market_data
+      - ./libs:/app/libs
+      - ./scripts:/app/scripts
+    environment:
+      - DEBUG=true
+      - LOG_LEVEL=DEBUG
+    command: python -m services.market_data.src.service --debug
+
+  aggregation:
+    volumes:
+      - ./services/aggregation:/app/services/aggregation
+      - ./libs:/app/libs
+      - ./scripts:/app/scripts
+    environment:
+      - DEBUG=true
+      - LOG_LEVEL=DEBUG
+    command: python -m services.aggregation.src.service --debug
+
+  analytics:
+    volumes:
+      - ./services/analytics:/app/services/analytics
+      - ./libs:/app/libs
+      - ./scripts:/app/scripts
+    environment:
+      - DEBUG=true
+      - LOG_LEVEL=DEBUG
+    command: python -m services.analytics.src.service --debug
+
+  persistence:
+    volumes:
+      - ./services/persistence:/app/services/persistence
+      - ./libs:/app/libs
+      - ./scripts:/app/scripts
+    environment:
+      - DEBUG=true
+      - LOG_LEVEL=DEBUG
+    command: python -m services.persistence.src.service --debug
+
+  api:
+    volumes:
+      - ./services/api:/app/services/api
+      - ./libs:/app/libs
+      - ./scripts:/app/scripts
+    environment:
+      - DEBUG=true
+      - LOG_LEVEL=DEBUG
+    command: uvicorn services.api.src.main:app --host 0.0.0.0 --port 8000 --reload
+
+  # Development tools
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: kafka-ui
+    ports:
+      - "8080:8080"
+    environment:
+      - KAFKA_CLUSTERS_0_NAME=local
+      - KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS=kafka:9092
+      - KAFKA_CLUSTERS_0_ZOOKEEPER=zookeeper:2181
+    depends_on:
+      - kafka
+      - zookeeper
+
+  pgadmin:
+    image: dpage/pgadmin4
+    container_name: pgadmin
+    environment:
+      - PGADMIN_DEFAULT_EMAIL=admin@example.com
+      - PGADMIN_DEFAULT_PASSWORD=admin
+    ports:
+      - "5050:80"
+    depends_on:
+      - timescaledb
+
+volumes:
+  timescaledb_data:
+    driver: local

@@ -1,128 +1,113 @@
 import logging
 from datetime import datetime
-from typing import Dict, Any, List, Tuple
+from collections import defaultdict
 
-logger = logging.getLogger("aggregation-service.bar-aggregator")
+logger = logging.getLogger("aggregation.bar_aggregator")
 
 class BarAggregator:
     """
-    Aggregates real-time price ticks into OHLCV bars for multiple intervals.
-    
-    Maintains in-memory state of active bars and produces completed bars
-    when their time windows are complete.
+    Aggregates real-time price updates into OHLCV bars for different time intervals.
+    Supports multiple symbols and time frames simultaneously.
     """
-    def __init__(self):
-        # Supported intervals in minutes
-        self.intervals = [1, 5, 15, 60]
-        
-        # Active bars storage: {symbol: {interval: {window_start: bar_data}}}
-        self.active_bars = {}
-        
-    def get_window_start(self, timestamp: int, interval_minutes: int) -> int:
+    
+    def __init__(self, intervals=None):
         """
-        Calculates the start timestamp of the window that a given timestamp belongs to.
+        Initialize the bar aggregator with the specified intervals.
         
         Args:
-            timestamp: Unix timestamp in seconds
-            interval_minutes: Bar interval in minutes
+            intervals: List of intervals in minutes (default: [1, 5, 15, 30, 60, 240, 1440])
+        """
+        # Default intervals if none provided
+        self.intervals = intervals or [1, 5, 15, 30, 60, 240, 1440]
+        
+        # Data structure to store in-progress bars
+        # Format: {symbol: {interval: {start_time: bar_data}}}
+        self.current_bars = defaultdict(lambda: defaultdict(dict))
+        
+    def get_window_start(self, timestamp, interval):
+        """
+        Calculate the start time of a bar window based on timestamp and interval.
+        
+        Args:
+            timestamp: ISO format timestamp string or Unix timestamp in milliseconds/seconds
+            interval: Bar interval in minutes
             
         Returns:
-            Unix timestamp of the start of the window
+            Unix timestamp of the bar's start time in seconds
         """
-        interval_seconds = interval_minutes * 60
-        return timestamp - (timestamp % interval_seconds)
-    
-    def update(self, symbol: str, timestamp: int, price: float, volume: int = 0) -> Dict[int, Dict]:
+        # Convert timestamp to seconds if it's a string or in milliseconds
+        if isinstance(timestamp, str):
+            # Parse ISO format timestamp
+            try:
+                dt = datetime.fromisoformat(timestamp)
+                timestamp_seconds = int(dt.timestamp())
+            except ValueError:
+                logger.error(f"Invalid timestamp format: {timestamp}")
+                # Use current time as fallback
+                timestamp_seconds = int(datetime.now().timestamp())
+        elif timestamp > 1000000000000:  # If timestamp is in milliseconds
+            timestamp_seconds = timestamp // 1000
+        else:
+            timestamp_seconds = int(timestamp)
+        
+        # Calculate interval in seconds
+        interval_seconds = interval * 60
+        
+        # Calculate the start of the window
+        return timestamp_seconds - (timestamp_seconds % interval_seconds)
+        
+    def update(self, symbol, timestamp, price, volume=0):
         """
-        Updates bars with a new price tick and returns any completed bars.
+        Update price data and check for completed bars.
         
         Args:
             symbol: The ticker symbol
-            timestamp: Unix timestamp in seconds
-            price: The current price
+            timestamp: ISO format timestamp string or Unix timestamp
+            price: Current price
             volume: Trading volume (optional)
             
         Returns:
-            Dictionary of completed bars by interval {interval: bar_data}
+            Dictionary of completed bars: {interval: bar_data, ...}
         """
+        price = float(price)  # Ensure price is a float
+        volume = int(volume) if volume else 0  # Ensure volume is an integer
+        
         completed_bars = {}
         
-        # Initialize symbol dict if it doesn't exist
-        if symbol not in self.active_bars:
-            self.active_bars[symbol] = {}
-        
-        # Current time for detecting completed bars
-        now = int(datetime.now().timestamp())
-        
-        # Update each interval
+        # Update bars for each interval
         for interval in self.intervals:
-            if interval not in self.active_bars[symbol]:
-                self.active_bars[symbol][interval] = {}
-            
-            # Calculate window for this interval
             window_start = self.get_window_start(timestamp, interval)
-            window_end = window_start + (interval * 60) - 1
             
-            # Get or create bar for this window
-            if window_start not in self.active_bars[symbol][interval]:
-                self.active_bars[symbol][interval][window_start] = {
-                    "event_type": "price.ohlcv",
-                    "version": "1.0",
+            # Get the current bar for this symbol and interval
+            if window_start not in self.current_bars[symbol][interval]:
+                # Initialize a new bar
+                self.current_bars[symbol][interval][window_start] = {
                     "symbol": symbol,
-                    "interval_minutes": interval,
-                    "bar_start_ts": window_start,
-                    "bar_end_ts": window_end,
+                    "interval": interval,
+                    "timestamp": window_start,
                     "open": price,
                     "high": price,
                     "low": price,
                     "close": price,
-                    "volume": volume,
-                    "num_samples": 1,
-                    "source": "aggregation-service"
+                    "volume": volume
                 }
             else:
-                bar = self.active_bars[symbol][interval][window_start]
+                # Update existing bar
+                bar = self.current_bars[symbol][interval][window_start]
                 bar["high"] = max(bar["high"], price)
                 bar["low"] = min(bar["low"], price)
                 bar["close"] = price
                 bar["volume"] += volume
-                bar["num_samples"] += 1
             
-            # Check if there are any completed bars
-            # A bar is completed if:
-            # 1. The current time is past the end of the window
-            # 2. The bar's window is not the current active window
-            for bar_ts in list(self.active_bars[symbol][interval].keys()):
-                # Skip current window
-                if bar_ts == window_start:
-                    continue
-                    
-                bar = self.active_bars[symbol][interval][bar_ts]
-                
-                # If time has passed the window's end, the bar is complete
-                if now > bar["bar_end_ts"]:
-                    # Add to completed bars
+            # Check for completed bars (when a new window has started)
+            current_window = window_start
+            
+            # Remove and return completed bars (bars with start time < current window)
+            for start_time in list(self.current_bars[symbol][interval].keys()):
+                if start_time < current_window - (interval * 60):
+                    completed_bar = self.current_bars[symbol][interval].pop(start_time)
+                    # Only include if not already in the result
                     if interval not in completed_bars:
-                        completed_bars[interval] = []
-                    completed_bars[interval] = bar
-                    
-                    # Remove from active bars
-                    del self.active_bars[symbol][interval][bar_ts]
-                    logger.debug(f"Completed {interval}min bar for {symbol} at {bar_ts}")
+                        completed_bars[interval] = completed_bar
         
         return completed_bars
-    
-    def get_active_bars(self, symbol: str = None):
-        """
-        Returns the currently active (incomplete) bars.
-        Useful for debugging or status reporting.
-        
-        Args:
-            symbol: Optional symbol filter
-            
-        Returns:
-            Dict of active bars
-        """
-        if symbol:
-            return self.active_bars.get(symbol, {})
-        return self.active_bars

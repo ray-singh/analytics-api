@@ -20,7 +20,7 @@ KAFKA_BOOTSTRAP = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
 CONSUMER_GROUP = os.getenv("CONSUMER_GROUP", "analytics-service")
 INPUT_TOPIC = os.getenv("INPUT_TOPIC", "market.prices.ohlcv")
 OUTPUT_TOPIC = os.getenv("OUTPUT_TOPIC", "market.analytics")
-MAX_HISTORY = int(os.getenv("MAX_HISTORY", "200"))  # Max bars to keep in memory
+MAX_HISTORY = int(os.getenv("MAX_HISTORY", "200"))  
 
 # In-memory price histories for technical analysis
 # Structure: {symbol: {interval: pd.DataFrame}}
@@ -30,6 +30,12 @@ async def process_ohlcv_bar(producer, event):
     """Process an OHLCV bar event and calculate analytics"""
     symbol = event["symbol"]
     interval = event["interval_minutes"]
+    
+    bar_timestamp = event.get("bar_start_ts") or event.get("timestamp") or event.get("bar_end_ts")
+    
+    if bar_timestamp is None:
+        logger.warning(f"Missing timestamp in event: {event}")
+        return
     
     # Initialize nested dictionaries if needed
     if symbol not in price_history:
@@ -41,16 +47,20 @@ async def process_ohlcv_bar(producer, event):
     
     # Add the new bar to history
     new_row = pd.DataFrame([{
-        'timestamp': event["bar_start_ts"],
+        'timestamp': bar_timestamp,
         'open': event["open"],
         'high': event["high"],
         'low': event["low"],
         'close': event["close"],
         'volume': event["volume"]
     }])
+
+    # Fix the concatenation warning
+    if price_history[symbol][interval].empty:
+        df = new_row
+    else:
+        df = pd.concat([price_history[symbol][interval], new_row], ignore_index=True)
     
-    # Concatenate and limit history
-    df = pd.concat([price_history[symbol][interval], new_row], ignore_index=True)
     df = df.sort_values(by='timestamp').reset_index(drop=True)
     
     # Trim to keep only recent history
@@ -83,7 +93,7 @@ async def process_ohlcv_bar(producer, event):
             "version": "1.0",
             "symbol": symbol,
             "interval_minutes": interval,
-            "timestamp": event["bar_end_ts"],
+            "timestamp": event.get("bar_end_ts", bar_timestamp),
             "price": event["close"],
             "indicators": indicators
         }
@@ -92,7 +102,7 @@ async def process_ohlcv_bar(producer, event):
         key = f"{symbol}:{interval}".encode()
         await producer.send(OUTPUT_TOPIC, key=key, value=json.dumps(analytics_event).encode())
         
-        logger.info(f"Published analytics for {symbol} {interval}min: RSI={indicators.get('rsi_14', 'N/A'):.2f}")
+        logger.info(f"Published analytics for {symbol} {interval}min: RSI={indicators.get('rsi_14', 'N/A')}")
 
 async def consume_ohlcv_bars():
     """Consume OHLCV bar events and produce analytics events"""
@@ -123,12 +133,22 @@ async def consume_ohlcv_bars():
             try:
                 event = msg.value
                 
-                # Validate event structure
+                # Log the event for debugging
+                logger.debug(f"Received event: {event}")
+                
+                # Validate event structure - we need OHLC data and a timestamp field
+                required_fields = ["symbol", "interval_minutes", "open", "high", "low", "close"]
+                timestamp_fields = ["timestamp", "bar_end_ts"]
+                
                 if (event.get("event_type") == "price.ohlcv" and 
-                    all(k in event for k in ["symbol", "interval_minutes", "open", "high", "low", "close"])):
+                    all(k in event for k in required_fields) and
+                    any(t in event for t in timestamp_fields)):
                     await process_ohlcv_bar(producer, event)
                 else:
-                    logger.warning(f"Invalid event structure: {event.get('event_type', 'unknown')}")
+                    missing = [k for k in required_fields if k not in event]
+                    if not any(t in event for t in timestamp_fields):
+                        missing.append("timestamp field")
+                    logger.warning(f"Invalid event structure: {event.get('event_type', 'unknown')}, missing: {missing}")
             except Exception as e:
                 logger.error(f"Error processing message: {e}", exc_info=True)
     finally:

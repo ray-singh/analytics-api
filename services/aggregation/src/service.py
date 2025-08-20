@@ -55,11 +55,14 @@ async def run_service():
             try:
                 event = msg.value
                 
-                # Only process raw price events
-                if event.get("event_type") == "price.raw":
+                # Log the received event for debugging
+                logger.debug(f"Received event: {event}")
+                
+                # Check if we have all required fields
+                if "symbol" in event and "price" in event and "timestamp" in event:
                     symbol = event["symbol"]
-                    price = event["price"]
-                    timestamp = event["timestamp"]
+                    price = float(event["price"])
+                    timestamp = event["timestamp"]  
                     volume = event.get("volume", 0)
                     
                     # Update aggregators with new price
@@ -69,12 +72,25 @@ async def run_service():
                     for interval, bar in completed_bars.items():
                         # Use symbol + interval as key for partitioning
                         key = f"{symbol}:{interval}".encode()
+                        
+                        # Calculate the actual end timestamp for this bar
+                        window_start = bar["timestamp"]
+                        window_end = window_start + (interval * 60)
+                        
+                        # Add required fields for downstream processing
+                        bar["event_type"] = "price.ohlcv"
+                        bar["interval_minutes"] = interval  # Add the interval_minutes field
+                        bar["bar_start_ts"] = window_start  # Explicitly add start timestamp
+                        bar["bar_end_ts"] = window_end  # Set end timestamp correctly
+                        
                         await producer.send(
                             OUTPUT_TOPIC, 
                             key=key, 
                             value=json.dumps(bar).encode()
                         )
-                        logger.debug(f"Published {interval}min bar for {symbol}: {bar['close']}")
+                        logger.info(f"Published {interval}min bar for {symbol}: {bar['close']}")
+                else:
+                    logger.warning(f"Skipping event, missing required fields: {event}")
             
             except Exception as e:
                 logger.error(f"Error processing message: {e}", exc_info=True)

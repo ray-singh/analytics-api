@@ -204,9 +204,9 @@ def init_database(db_url, drop_existing=False):
         # Retention policies
         print("Setting retention policies...")
         
-        # Raw prices - keep for 7 days
+        # Raw prices - keep for 5 days
         cur.execute("""
-            SELECT add_retention_policy('realtime_prices', INTERVAL '7 days');
+            SELECT add_retention_policy('realtime_prices', INTERVAL '5 days');
         """)
         
         print("Setting compression policies...")
@@ -227,6 +227,57 @@ def init_database(db_url, drop_existing=False):
             );
             
             SELECT add_compression_policy('historical_ohlcv', INTERVAL '7 days');
+        """)
+        
+        # Add continuous aggregates for automatic aggregation
+        print("Setting up continuous aggregates...")
+
+        # Continuous aggregate for 5-minute OHLCV from realtime prices
+        cur.execute("""
+            CREATE MATERIALIZED VIEW IF NOT EXISTS realtime_to_intraday_5min
+            WITH (timescaledb.continuous) AS
+            SELECT
+                time_bucket('5 minutes', timestamp) AS bucket,
+                symbol,
+                FIRST(price, timestamp) AS open,
+                MAX(price) AS high,
+                MIN(price) AS low,
+                LAST(price, timestamp) AS close,
+                SUM(volume) AS volume,
+                COUNT(*) AS num_samples,
+                'aggregator' AS source
+            FROM realtime_prices
+            GROUP BY bucket, symbol
+            WITH NO DATA;
+
+            SELECT add_continuous_aggregate_policy('realtime_to_intraday_5min',
+                start_offset => INTERVAL '1 hour',
+                end_offset => INTERVAL '1 minute',
+                schedule_interval => INTERVAL '5 minutes');
+        """)
+
+        # Add continuous aggregate for daily OHLCV from intraday
+        cur.execute("""
+            CREATE MATERIALIZED VIEW IF NOT EXISTS intraday_to_daily
+            WITH (timescaledb.continuous) AS
+            SELECT
+                time_bucket('1 day', timestamp) AS bucket,
+                symbol,
+                FIRST(open, timestamp) AS open,
+                MAX(high) AS high,
+                MIN(low) AS low,
+                LAST(close, timestamp) AS close,
+                SUM(volume) AS volume,
+                'aggregator' AS source
+            FROM intraday_ohlcv
+            WHERE interval_minutes = 5
+            GROUP BY bucket, symbol
+            WITH NO DATA;
+
+            SELECT add_continuous_aggregate_policy('intraday_to_daily',
+                start_offset => INTERVAL '1 day',
+                end_offset => INTERVAL '1 hour',
+                schedule_interval => INTERVAL '1 hour');
         """)
         
         print("Database initialization completed successfully.")

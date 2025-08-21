@@ -691,3 +691,34 @@ class OHLCVRepository:
         df.sort_index(inplace=True)
         
         return df
+    
+    async def get_latest_intraday(self, symbol, interval_minutes):
+        """Get the latest intraday OHLCV record for a symbol and interval"""
+        conn = await self.get_connection()
+        try:
+            query = """
+                SELECT * FROM intraday_ohlcv
+                WHERE symbol = $1 AND interval_minutes = $2
+                ORDER BY timestamp DESC
+                LIMIT 1
+            """
+            record = await conn.fetchrow(query, symbol, interval_minutes)
+            return record
+        finally:
+            await conn.close()
+    
+    async def get_latest_daily(self, symbol):
+        """Get the latest daily OHLCV record for a symbol"""
+        conn = await self.get_connection()
+        try:
+            query = """
+                SELECT * FROM historical_ohlcv
+                WHERE symbol = $1
+                ORDER BY timestamp DESC
+                LIMIT 1
+            """
+            record = await conn.fetchrow(query, symbol)
+            return record
+        finally:
+            await conn.close()
+    

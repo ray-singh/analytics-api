@@ -55,14 +55,14 @@ class AlphaVantageClient:
         await self._respect_rate_limit()
         
         params = {
-            "function": "TIME_SERIES_DAILY_ADJUSTED",
+            "function": "TIME_SERIES_DAILY",
             "symbol": symbol,
             "outputsize": outputsize,
             "datatype": "json",
             "apikey": self.api_key
         }
         
-        logger.info(f"Fetching daily adjusted data for {symbol} with outputsize {outputsize}")
+        logger.info(f"Fetching daily data for {symbol} with outputsize {outputsize}")
         
         try:
             async with aiohttp.ClientSession() as session:
@@ -83,20 +83,8 @@ class AlphaVantageClient:
                         time_series = data["Time Series (Daily)"]
                         df = pd.DataFrame(time_series).T
                         
-                        # Rename columns to match standard format
-                        df.rename(columns={
-                            '1. open': 'open',
-                            '2. high': 'high',
-                            '3. low': 'low',
-                            '4. close': 'close',
-                            '5. adjusted close': 'adjusted_close',
-                            '6. volume': 'volume',
-                            '7. dividend amount': 'dividend',
-                            '8. split coefficient': 'split'
-                        }, inplace=True)
-                        
                         # Convert types
-                        for col in ['open', 'high', 'low', 'close', 'adjusted_close']:
+                        for col in ['open', 'high', 'low', 'close']:
                             df[col] = pd.to_numeric(df[col])
                         df['volume'] = pd.to_numeric(df['volume'], downcast='integer')
                         

@@ -3,7 +3,7 @@ services:
   zookeeper:
     image: bitnami/zookeeper:latest
     ports:
-      - "2182:2181"  # Changed from 2181:2181 to avoid conflict
+      - "2182:2181"  
     environment:
       - ALLOW_ANONYMOUS_LOGIN=yes
     volumes:
@@ -18,7 +18,7 @@ services:
     image: confluentinc/cp-kafka:7.3.0
     ports:
       - "9092:9092"
-      - "29092:29092"   # expose second listener to host
+      - "29092:29092"   
     environment:
       KAFKA_BROKER_ID: 1
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
@@ -87,7 +87,7 @@ services:
       - PYTHONUNBUFFERED=1
     depends_on:
       kafka:
-        condition: service_healthy  # Wait for Kafka to be healthy
+        condition: service_healthy  
     restart: unless-stopped
     healthcheck:
       test: ["CMD-SHELL", "ps aux | grep 'python -m services.market_data' | grep -v grep || exit 1"]
@@ -217,7 +217,22 @@ services:
     profiles:
       - init
 
+  pgadmin:
+    image: dpage/pgadmin4
+    container_name: pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@example.com
+      PGADMIN_DEFAULT_PASSWORD: admin
+    ports:
+      - "5050:80"
+    volumes:
+      - pgadmin_data:/var/lib/pgadmin
+    restart: unless-stopped
+    depends_on:
+      - timescaledb
+
 volumes:
   zookeeper_data:
   kafka_data:
   timescaledb_data:
+  pgadmin_data:

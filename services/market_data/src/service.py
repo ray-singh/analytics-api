@@ -2,13 +2,14 @@ import asyncio
 import json
 import os
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from aiokafka import AIOKafkaProducer
 from dotenv import load_dotenv
 from services.market_data.src.clients.twelvedata_client import TwelveDataClient
 from services.market_data.src.clients.alphavantage_client import AlphaVantageClient
 from services.market_data.src.clients.yfinance_client import YFinanceClient
 from services.market_data.src.backfill.backfill_manager import BackfillManager
+from services.persistence.src.repositories.ohlcv_repository import OHLCVRepository
 
 logging.basicConfig(
     level=logging.INFO,
@@ -30,8 +31,6 @@ class MarketDataService:
     def __init__(self):
         self.producer = None
         self.yf_client = YFinanceClient()
-        self.td_client = TwelveDataClient()
-        self.av_client = AlphaVantageClient()
         self.backfill_manager = BackfillManager()
         self._running = False
         self._tasks = []
@@ -56,7 +55,7 @@ class MarketDataService:
         logger.info(f"Starting market data streams for symbols: {SYMBOLS}")
         
         # Start backfill request listener
-        self._tasks.append(asyncio.create_task(self.listen_for_backfill_requests()))
+        # self._tasks.append(asyncio.create_task(self.listen_for_backfill_requests()))
         
         # Set up price streams for all symbols
         for symbol in SYMBOLS:
@@ -65,6 +64,9 @@ class MarketDataService:
         
         # Health check task
         self._tasks.append(asyncio.create_task(self._health_check()))
+        
+        # Schedule periodic data checks
+        self._tasks.append(asyncio.create_task(self._schedule_data_checks()))
     
     async def setup_price_stream(self, symbol):
         """Set up real-time price streaming for a symbol"""
@@ -114,106 +116,116 @@ class MarketDataService:
         except asyncio.CancelledError:
             logger.info("Health check cancelled")
             raise
+        
+    async def check_and_update_intraday_data(self):
+        """
+        Check if intraday data needs updating and fetch if necessary
+        Should run periodically to ensure 5-minute data is up to date
+        """        
+        repo = OHLCVRepository()
+        for symbol in SYMBOLS:
+            try:
+                # Get the most recent intraday record for this symbol
+                latest = await repo.get_latest_intraday(symbol, 5)  # 5 minute interval
+                
+                # Check if we need to fetch data
+                need_update = False
+                
+                if not latest:
+                    logger.info(f"No intraday data for {symbol}, fetching initial data")
+                    need_update = True
+                    start_date = (datetime.now() - timedelta(days=365)).strftime('%Y-%m-%d')
+                else:
+                    # Convert latest timestamp to datetime
+                    latest_dt = datetime.fromisoformat(latest['timestamp'])
+                    current_time = datetime.now()
+                    
+                    # If more than 5 minutes behind, fetch update
+                    if (current_time - latest_dt).total_seconds() > 300:  # 5 minutes in seconds
+                        logger.info(f"Intraday data for {symbol} outdated, fetching updates")
+                        need_update = True
+                        # Start fetching from the last entry
+                        start_date = latest_dt.strftime('%Y-%m-%d %H:%M:%S')
+                
+                if need_update:
+                    # Use backfill manager to fetch data
+                    end_date = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                    await self.backfill_manager.fetch_intraday_data(
+                        symbol=symbol,
+                        interval="5min",
+                        start_date=start_date,
+                        end_date=end_date
+                    )
+                    logger.info(f"Updated intraday data for {symbol}")
+                
+            except Exception as e:
+                logger.error(f"Error updating intraday data for {symbol}: {e}")
     
-    async def listen_for_backfill_requests(self):
-        """Listen for backfill requests on Kafka"""
-        from aiokafka import AIOKafkaConsumer
-        
-        logger.info(f"Starting backfill request listener on {BACKFILL_REQUEST_TOPIC}")
-        
-        consumer = AIOKafkaConsumer(
-            BACKFILL_REQUEST_TOPIC,
-            bootstrap_servers=KAFKA_BOOTSTRAP,
-            group_id="market-data-service-backfill"
-        )
-        
-        await consumer.start()
-        
+    async def check_and_update_daily_data(self):
+        """
+        Check if daily data needs updating and fetch if necessary
+        Should run once per day to ensure daily OHLCV is up to date
+        """        
+        repo = OHLCVRepository()
+        for symbol in SYMBOLS:
+            try:
+                # Get the most recent daily record for this symbol
+                latest = await repo.get_latest_daily(symbol)
+                
+                # Check if we need to fetch data
+                need_update = False
+                
+                if not latest:
+                    logger.info(f"No daily data for {symbol}, fetching initial data")
+                    need_update = True
+                    start_date = (datetime.now() - timedelta(days=365)).strftime('%Y-%m-%d')
+                else:
+                    # Convert latest timestamp to datetime
+                    latest_dt = datetime.fromisoformat(latest['timestamp'])
+                    current_time = datetime.now()
+                    
+                    # If more than 1 day behind, fetch update
+                    if (current_time - latest_dt).total_seconds() > 86400:  # 24 hours in seconds
+                        logger.info(f"Daily data for {symbol} outdated, fetching updates")
+                        need_update = True
+                        # Start fetching from the last entry
+                        start_date = latest_dt.strftime('%Y-%m-%d')
+                
+                if need_update:
+                    # Use the backfill manager to fetch data
+                    end_date = datetime.now().strftime('%Y-%m-%d')
+                    await self.backfill_manager.fetch_daily_data(
+                        symbol=symbol,
+                        start_date=start_date,
+                        end_date=end_date
+                    )
+                    logger.info(f"Updated daily data for {symbol}")
+                
+            except Exception as e:
+                logger.error(f"Error updating daily data for {symbol}: {e}")
+    
+    async def _schedule_data_checks(self):
+        """Schedule periodic data checks and updates"""
         try:
-            async for msg in consumer:
-                try:
-                    request = json.loads(msg.value.decode("utf-8"))
-                    logger.info(f"Received backfill request: {request}")
+            # Initial data check at startup
+            await self.check_and_update_intraday_data()
+            await self.check_and_update_daily_data()
+            
+            while self._running:
+                # Check intraday data every 5 minutes
+                await asyncio.sleep(300)
+                if self._running:
+                    await self.check_and_update_intraday_data()
+                
+                # Check daily data once per day (after market close)
+                now = datetime.now()
+                if now.hour == 16 and now.minute < 5:  # Around 4:00 PM
+                    await self.check_and_update_daily_data()
                     
-                    # Process backfill request in a separate task
-                    asyncio.create_task(self.process_backfill_request(request))
-                    
-                except json.JSONDecodeError:
-                    logger.error(f"Invalid JSON in backfill request: {msg.value}")
-                except Exception as e:
-                    logger.error(f"Error processing backfill request: {e}")
         except asyncio.CancelledError:
-            logger.info("Backfill request listener cancelled")
-        finally:
-            await consumer.stop()
+            logger.info("Data check scheduler cancelled")
+            raise
     
-    async def process_backfill_request(self, request):
-        """Process a backfill request"""
-        request_id = request.get("request_id", "unknown")
-        symbol = request.get("symbol")
-        interval = request.get("interval")
-        start_date = request.get("start_date")
-        end_date = request.get("end_date")
-        
-        if not all([symbol, interval]):
-            error_msg = "Missing required parameters in backfill request"
-            logger.error(error_msg)
-            await self.send_backfill_status(request_id, "error", error_msg)
-            return
-        
-        try:
-            # Send status update
-            await self.send_backfill_status(request_id, "started", 
-                                          f"Starting backfill for {symbol} ({interval})")
-            
-            # Choose appropriate data source based on interval
-            if interval in ['1day', '1d', 'daily']:
-                # Use AlphaVantage for historical daily data
-                data = await self.backfill_manager.backfill_daily_data(
-                    symbol=symbol,
-                    start_date=start_date,
-                    end_date=end_date
-                )
-            else:
-                # Use TwelveData for intraday data
-                data = await self.backfill_manager.backfill_intraday_data(
-                    symbol=symbol,
-                    interval=interval,
-                    start_date=start_date,
-                    end_date=end_date
-                )
-            
-            if data.empty:
-                await self.send_backfill_status(request_id, "error", 
-                                              f"No data found for {symbol} ({interval})")
-                return
-            
-            # Convert data to OHLCV format and send to Kafka
-            # Implementation depends on how you handle historical data
-            
-            # Send success status
-            count = len(data)
-            await self.send_backfill_status(request_id, "completed", 
-                                          f"Backfill completed for {symbol} ({interval}): {count} bars")
-            
-        except Exception as e:
-            logger.error(f"Error in backfill for {symbol}: {e}")
-            await self.send_backfill_status(request_id, "error", str(e))
-    
-    async def send_backfill_status(self, request_id, status, message):
-        """Send backfill status update to Kafka"""
-        status_msg = {
-            "request_id": request_id,
-            "status": status,
-            "timestamp": datetime.now().isoformat(),
-            "message": message
-        }
-        
-        await self.producer.send_and_wait(
-            BACKFILL_STATUS_TOPIC,
-            json.dumps(status_msg).encode("utf-8")
-        )
-        
     async def stop(self):
         """Stop the market data service"""
         if not self._running:

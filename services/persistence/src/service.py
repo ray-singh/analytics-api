@@ -8,14 +8,12 @@ from services.persistence.src.repositories.price_repository import PriceReposito
 from services.persistence.src.repositories.ohlcv_repository import OHLCVRepository
 from services.persistence.src.repositories.analytics_repository import AnalyticsRepository
 
-# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger("persistence-service")
 
-# Load environment variables
 load_dotenv()
 KAFKA_BOOTSTRAP = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:password@localhost:5432/stockanalytics")

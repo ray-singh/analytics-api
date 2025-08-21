@@ -5,6 +5,7 @@ import aiohttp
 import pandas as pd
 from typing import Dict, Any, Optional
 from datetime import datetime, timedelta
+from io import StringIO
 
 logger = logging.getLogger('market_data_service.alphavantage')
 
@@ -58,7 +59,7 @@ class AlphaVantageClient:
             "function": "TIME_SERIES_DAILY",
             "symbol": symbol,
             "outputsize": outputsize,
-            "datatype": "json",
+            "datatype": "csv",  #
             "apikey": self.api_key
         }
         
@@ -68,31 +69,24 @@ class AlphaVantageClient:
             async with aiohttp.ClientSession() as session:
                 async with session.get(self.base_url, params=params) as response:
                     if response.status == 200:
-                        data = await response.json()
-                        
+                        csv_text = await response.text()
                         # Check for error messages
-                        if "Error Message" in data:
-                            logger.error(f"API error: {data['Error Message']}")
+                        if "Error Message" in csv_text:
+                            logger.error(f"API error: {csv_text}")
                             return pd.DataFrame()
                         
-                        if "Time Series (Daily)" not in data:
-                            logger.error(f"Unexpected API response format: {data.keys()}")
+                        # Convert CSV text to DataFrame
+                        df = pd.read_csv(StringIO(csv_text))
+                        
+                        if df.empty or 'timestamp' not in df.columns:
+                            logger.error(f"Invalid CSV data received: {csv_text[:100]}...")
                             return pd.DataFrame()
-                            
-                        # Convert to DataFrame
-                        time_series = data["Time Series (Daily)"]
-                        df = pd.DataFrame(time_series).T
                         
-                        # Convert types
-                        for col in ['open', 'high', 'low', 'close']:
-                            df[col] = pd.to_numeric(df[col])
-                        df['volume'] = pd.to_numeric(df['volume'], downcast='integer')
-                        
-                        # Convert index to datetime
-                        df.index = pd.to_datetime(df.index)
+                        # Set timestamp as index and convert to datetime
+                        df['timestamp'] = pd.to_datetime(df['timestamp'])
+                        df.set_index('timestamp', inplace=True)
                         df.index.name = 'date'
-                        
-                        # Sort by date (ascending)
+            
                         df.sort_index(inplace=True)
                         
                         logger.info(f"Received {len(df)} daily records for {symbol}")

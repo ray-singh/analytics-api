@@ -18,7 +18,7 @@ class BarAggregator:
             intervals: List of intervals in minutes (default: [1, 5, 15, 30, 60, 240, 1440])
         """
         # Default intervals if none provided
-        self.intervals = intervals or [1, 5, 15, 30, 60, 240, 1440]
+        self.intervals = intervals or [5, 1440]
         
         # Data structure to store in-progress bars
         # Format: {symbol: {interval: {start_time: bar_data}}}

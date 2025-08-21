@@ -25,15 +25,30 @@ def init_database(db_url, drop_existing=False):
         
         if drop_existing:
             print("Dropping existing tables...")
-            cur.execute("""
-                DROP TABLE IF EXISTS 
-                    realtime_prices, 
-                    intraday_ohlcv, 
-                    historical_ohlcv,
-                    intraday_analytics,
-                    daily_analytics
-                CASCADE;
-            """)
+            print("hehe")
+            
+            # Drop tables individually, starting with views/materialized views
+            cur.execute("DROP MATERIALIZED VIEW IF EXISTS realtime_to_intraday_5min CASCADE;")
+            cur.execute("DROP MATERIALIZED VIEW IF EXISTS intraday_to_daily CASCADE;")
+            
+            # Remove retention and compression policies
+            tables = ["realtime_prices", "intraday_ohlcv", "historical_ohlcv"]
+            for table in tables:
+                try:
+                    cur.execute(f"SELECT remove_retention_policy('{table}', if_exists => TRUE);")
+                except:
+                    pass
+                try:
+                    cur.execute(f"SELECT remove_compression_policy('{table}', if_exists => TRUE);")
+                except:
+                    pass
+            
+            # Drop hypertables one by one
+            cur.execute("DROP TABLE IF EXISTS realtime_prices CASCADE;")
+            cur.execute("DROP TABLE IF EXISTS intraday_ohlcv CASCADE;")
+            cur.execute("DROP TABLE IF EXISTS historical_ohlcv CASCADE;")
+            cur.execute("DROP TABLE IF EXISTS intraday_analytics CASCADE;")
+            cur.execute("DROP TABLE IF EXISTS daily_analytics CASCADE;")
         
         # Create tables
         print("Creating tables...")
@@ -41,13 +56,14 @@ def init_database(db_url, drop_existing=False):
         # Real-time prices table (high frequency tick data)
         cur.execute("""
             CREATE TABLE IF NOT EXISTS realtime_prices (
-                id SERIAL PRIMARY KEY,
+                id SERIAL, 
                 symbol VARCHAR(20) NOT NULL,
                 price NUMERIC(19,4) NOT NULL,
                 volume BIGINT,
                 timestamp TIMESTAMPTZ NOT NULL,
                 source VARCHAR(50),
-                created_at TIMESTAMPTZ DEFAULT NOW()
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                PRIMARY KEY (id, timestamp)  
             );
         """)
         
@@ -67,7 +83,7 @@ def init_database(db_url, drop_existing=False):
         # Create intraday OHLCV table
         cur.execute("""
             CREATE TABLE IF NOT EXISTS intraday_ohlcv (
-                id SERIAL PRIMARY KEY,
+                id SERIAL,  
                 symbol VARCHAR(20) NOT NULL,
                 timestamp TIMESTAMPTZ NOT NULL,
                 interval_minutes INTEGER NOT NULL,
@@ -79,7 +95,8 @@ def init_database(db_url, drop_existing=False):
                 num_samples INTEGER DEFAULT 1,
                 source VARCHAR(50),
                 created_at TIMESTAMPTZ DEFAULT NOW(),
-                CONSTRAINT unique_bar UNIQUE (symbol, timestamp, interval_minutes)
+                PRIMARY KEY (id, timestamp),  
+                CONSTRAINT unique_bar UNIQUE (symbol, timestamp, interval_minutes) 
             );
         """)
         
@@ -93,7 +110,7 @@ def init_database(db_url, drop_existing=False):
         # Create historical daily OHLCV table
         cur.execute("""
             CREATE TABLE IF NOT EXISTS historical_ohlcv (
-                id SERIAL PRIMARY KEY,
+                id SERIAL,  
                 symbol VARCHAR(20) NOT NULL,
                 timestamp TIMESTAMPTZ NOT NULL,
                 open NUMERIC(19,4) NOT NULL,
@@ -104,7 +121,8 @@ def init_database(db_url, drop_existing=False):
                 adjusted_close NUMERIC(19,4),
                 source VARCHAR(50),
                 created_at TIMESTAMPTZ DEFAULT NOW(),
-                CONSTRAINT unique_daily UNIQUE (symbol, timestamp)
+                PRIMARY KEY (id, timestamp),  
+                CONSTRAINT unique_daily UNIQUE (symbol, timestamp)  
             );
         """)
         
@@ -120,7 +138,7 @@ def init_database(db_url, drop_existing=False):
         # Intraday analytics
         cur.execute("""
             CREATE TABLE IF NOT EXISTS intraday_analytics (
-                id SERIAL PRIMARY KEY,
+                id SERIAL,  
                 symbol VARCHAR(20) NOT NULL,
                 timestamp TIMESTAMPTZ NOT NULL,
                 interval_minutes INTEGER NOT NULL,
@@ -148,6 +166,7 @@ def init_database(db_url, drop_existing=False):
                 obv NUMERIC(19,4),
                 
                 created_at TIMESTAMPTZ DEFAULT NOW(),
+                PRIMARY KEY (id, timestamp),  
                 CONSTRAINT unique_intraday_analytics UNIQUE (symbol, timestamp, interval_minutes)
             );
         """)
@@ -162,7 +181,7 @@ def init_database(db_url, drop_existing=False):
         # Daily analytics
         cur.execute("""
             CREATE TABLE IF NOT EXISTS daily_analytics (
-                id SERIAL PRIMARY KEY,
+                id SERIAL,
                 symbol VARCHAR(20) NOT NULL,
                 timestamp TIMESTAMPTZ NOT NULL,
                 price NUMERIC(19,4) NOT NULL,
@@ -190,7 +209,8 @@ def init_database(db_url, drop_existing=False):
                 obv NUMERIC(19,4),
                 
                 created_at TIMESTAMPTZ DEFAULT NOW(),
-                CONSTRAINT unique_daily_analytics UNIQUE (symbol, timestamp)
+                PRIMARY KEY (id, timestamp),
+                CONSTRAINT unique_daily_analytics UNIQUE (symbol, timestamp)  
             );
         """)
         
@@ -251,8 +271,8 @@ def init_database(db_url, drop_existing=False):
             WITH NO DATA;
 
             SELECT add_continuous_aggregate_policy('realtime_to_intraday_5min',
-                start_offset => INTERVAL '1 hour',
-                end_offset => INTERVAL '1 minute',
+                start_offset => INTERVAL '2 hours',  
+                end_offset => INTERVAL '10 minutes',  
                 schedule_interval => INTERVAL '5 minutes');
         """)
 
@@ -275,8 +295,8 @@ def init_database(db_url, drop_existing=False):
             WITH NO DATA;
 
             SELECT add_continuous_aggregate_policy('intraday_to_daily',
-                start_offset => INTERVAL '1 day',
-                end_offset => INTERVAL '1 hour',
+                start_offset => INTERVAL '3 days',  -- Increased from 1 day
+                end_offset => INTERVAL '6 hours',   -- Increased from 1 hour
                 schedule_interval => INTERVAL '1 hour');
         """)
         

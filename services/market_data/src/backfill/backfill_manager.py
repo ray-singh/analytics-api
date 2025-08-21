@@ -9,6 +9,7 @@ from aiokafka import AIOKafkaProducer
 from ..clients.yfinance_client import YFinanceClient
 from ..clients.twelvedata_client import TwelveDataClient
 from ..clients.alphavantage_client import AlphaVantageClient
+from ..repositories.ohlcv_repository import OHLCVRepository
 
 logger = logging.getLogger('market_data_service.backfill')
 
@@ -20,6 +21,9 @@ class BackfillManager:
         self.twelvedata_client = TwelveDataClient()
         self.alphavantage_client = AlphaVantageClient()
         self.kafka_bootstrap = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
+        self.db_url = os.getenv("DATABASE_URL", "postgresql://postgres:password@timescaledb:5432/stockanalytics")
+        self.repo = OHLCVRepository(self.db_url)
+
     
     async def fetch_intraday_data(self, symbol, interval, start_date, end_date):
         """
@@ -47,7 +51,7 @@ class BackfillManager:
                 # Fall back to date-only format
                 end_dt = datetime.strptime(end_date, '%Y-%m-%d') if end_date else datetime.now()
             
-            logger.info(f"Fetching {interval} data for {symbol} from {start_date} to {end_date}")
+            logger.info(f"Starting intraday backfill for {symbol} {interval} from {start_date} to {end_date}")
             
             # Calculate optimal chunk size based on interval
             # More frequent intervals = smaller chunks to avoid hitting API limits
@@ -126,6 +130,28 @@ class BackfillManager:
                 combined_df = pd.concat(all_data)
                 combined_df = combined_df.sort_index()
                 logger.info(f"Successfully fetched a total of {len(combined_df)} records for {symbol}")
+                
+                if len(combined_df) > 0:
+                    interval_minutes = self._convert_interval_to_minutes(interval)
+
+                    for idx, row in combined_df.iterrows():
+                        try:
+                            await self.repo.insert_intraday_ohlcv(
+                                symbol=symbol,
+                                timestamp=idx,
+                                open_price=float(row['open']),
+                                high=float(row['high']),
+                                low=float(row['low']),
+                                close=float(row['close']),
+                                volume=int(row['volume']),
+                                interval_minutes=interval_minutes,
+                                source='twelvedata'
+                            )
+                        except Exception as e:
+                            logger.error(f"Error inserting intraday data: {e}")
+        
+                    logger.info(f"Successfully stored {len(combined_df)} intraday bars for {symbol} in database")
+                
                 return combined_df
             
             logger.warning(f"No historical intraday data found for {symbol}")
@@ -147,7 +173,24 @@ class BackfillManager:
             )
             
             if len(df) > 0:
-                logger.info(f"Using AlphaVantage data for {symbol} ({len(df)} records)")
+                logger.info(f"Using AlphaVantage data for {symbol} ({len(df)} records)")                
+                for date, row in df.iterrows():
+                    try:
+                        await self.repo.insert_historical_daily(
+                            symbol=symbol,
+                            timestamp=date,
+                            open_price=float(row['open']),
+                            high=float(row['high']),
+                            low=float(row['low']),
+                            close=float(row['close']),
+                            volume=int(row['volume']),
+                            source='alphavantage'
+                        )
+                    except Exception as e:
+                        logger.error(f"Error inserting daily data: {e}")
+                
+                logger.info(f"Successfully stored {len(df)} daily bars for {symbol} in database")
+                
                 return df
             
             logger.warning(f"No historical daily data found for {symbol}")

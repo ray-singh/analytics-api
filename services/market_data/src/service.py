@@ -9,7 +9,7 @@ from services.market_data.src.clients.twelvedata_client import TwelveDataClient
 from services.market_data.src.clients.alphavantage_client import AlphaVantageClient
 from services.market_data.src.clients.yfinance_client import YFinanceClient
 from services.market_data.src.backfill.backfill_manager import BackfillManager
-from services.persistence.src.repositories.ohlcv_repository import OHLCVRepository
+from services.market_data.src.repositories.ohlcv_repository import OHLCVRepository
 
 logging.basicConfig(
     level=logging.INFO,
@@ -34,7 +34,9 @@ class MarketDataService:
         self.backfill_manager = BackfillManager()
         self._running = False
         self._tasks = []
-        
+        self.db_url = os.getenv("DATABASE_URL", "postgresql://postgres:password@timescaledb:5432/stockanalytics")
+        self.repo = OHLCVRepository(self.db_url)
+
     async def start(self):
         """Start the market data service"""
         if self._running:
@@ -122,11 +124,10 @@ class MarketDataService:
         Check if intraday data needs updating and fetch if necessary
         Should run periodically to ensure 5-minute data is up to date
         """        
-        repo = OHLCVRepository()
         for symbol in SYMBOLS:
             try:
                 # Get the most recent intraday record for this symbol
-                latest = await repo.get_latest_intraday(symbol, 5)  # 5 minute interval
+                latest = await self.repo.get_latest_intraday(symbol, 5)  # 5 minute interval
                 
                 # Check if we need to fetch data
                 need_update = False
@@ -166,11 +167,10 @@ class MarketDataService:
         Check if daily data needs updating and fetch if necessary
         Should run once per day to ensure daily OHLCV is up to date
         """        
-        repo = OHLCVRepository()
         for symbol in SYMBOLS:
             try:
                 # Get the most recent daily record for this symbol
-                latest = await repo.get_latest_daily(symbol)
+                latest = await self.repo.get_latest_daily(symbol)
                 
                 # Check if we need to fetch data
                 need_update = False

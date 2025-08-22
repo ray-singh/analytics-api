@@ -195,6 +195,13 @@ class ConnectionManager:
             self.consumers = {}
             self.running = False
 
+    # Add a function to broadcast real-time analytics
+    async def broadcast_realtime_analytics(self, symbol: str, data: dict):
+        """Broadcast real-time analytics to subscribed clients"""
+        if f"realtime-analytics:{symbol}" in self.active_connections:
+            for connection in self.active_connections[f"realtime-analytics:{symbol}"]:
+                await connection.send_json(data)
+
 # Create a global connection manager instance
 manager = ConnectionManager()
 

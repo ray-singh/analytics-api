@@ -13,6 +13,22 @@ from dotenv import load_dotenv
 load_dotenv()
 DEFAULT_DB_URL = os.getenv("DATABASE_URL", "postgresql://postgres:password@localhost:5432/stockanalytics")
 
+def add_retention_policy_if_not_exists(cur, table, interval):
+    cur.execute(f"""
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1
+                FROM timescaledb_information.jobs j
+                JOIN timescaledb_information.job_stats js ON j.job_id = js.job_id
+                WHERE j.proc_name = 'policy_retention'
+                  AND js.hypertable_name = '{table}'
+            ) THEN
+                PERFORM add_retention_policy('{table}', INTERVAL '{interval}');
+            END IF;
+        END$$;
+    """)
+
 def init_database(db_url, drop_existing=False):
     """Initialize database schema"""
     conn = None
@@ -49,6 +65,7 @@ def init_database(db_url, drop_existing=False):
             cur.execute("DROP TABLE IF EXISTS historical_ohlcv CASCADE;")
             cur.execute("DROP TABLE IF EXISTS intraday_analytics CASCADE;")
             cur.execute("DROP TABLE IF EXISTS daily_analytics CASCADE;")
+            cur.execute("DROP TABLE IF EXISTS realtime_analytics CASCADE;")
         
         # Create tables
         print("Creating tables...")
@@ -67,20 +84,18 @@ def init_database(db_url, drop_existing=False):
             );
         """)
         
-        # Convert to TimescaleDB hypertable
         cur.execute("""
             SELECT create_hypertable('realtime_prices', 'timestamp', 
                                      if_not_exists => TRUE,
                                      chunk_time_interval => INTERVAL '1 day');
         """)
         
-        # Add indexes
         cur.execute("""
             CREATE INDEX IF NOT EXISTS idx_realtime_prices_symbol_timestamp 
             ON realtime_prices (symbol, timestamp DESC);
         """)
         
-        # Create intraday OHLCV table
+        # Intraday OHLCV table
         cur.execute("""
             CREATE TABLE IF NOT EXISTS intraday_ohlcv (
                 id SERIAL,  
@@ -100,14 +115,12 @@ def init_database(db_url, drop_existing=False):
             );
         """)
         
-        # Convert to TimescaleDB hypertable
         cur.execute("""
             SELECT create_hypertable('intraday_ohlcv', 'timestamp', 
                                      if_not_exists => TRUE,
                                      chunk_time_interval => INTERVAL '1 month');
         """)
         
-        # Create historical daily OHLCV table
         cur.execute("""
             CREATE TABLE IF NOT EXISTS historical_ohlcv (
                 id SERIAL,  
@@ -126,15 +139,12 @@ def init_database(db_url, drop_existing=False):
             );
         """)
         
-        # Convert to TimescaleDB hypertable
         cur.execute("""
             SELECT create_hypertable('historical_ohlcv', 'timestamp', 
                                      if_not_exists => TRUE,
                                      chunk_time_interval => INTERVAL '1 year');
         """)
-        
-        # Create analytics tables
-        
+                
         # Intraday analytics
         cur.execute("""
             CREATE TABLE IF NOT EXISTS intraday_analytics (
@@ -171,7 +181,6 @@ def init_database(db_url, drop_existing=False):
             );
         """)
         
-        # Convert to TimescaleDB hypertable
         cur.execute("""
             SELECT create_hypertable('intraday_analytics', 'timestamp', 
                                      if_not_exists => TRUE,
@@ -214,21 +223,54 @@ def init_database(db_url, drop_existing=False):
             );
         """)
         
-        # Convert to TimescaleDB hypertable
         cur.execute("""
             SELECT create_hypertable('daily_analytics', 'timestamp', 
                                      if_not_exists => TRUE,
                                      chunk_time_interval => INTERVAL '1 year');
+        """)
+
+        print("Creating real-time analytics table...")
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS realtime_analytics (
+                id SERIAL,  
+                symbol VARCHAR(20) NOT NULL,
+                timestamp TIMESTAMPTZ NOT NULL,
+                price NUMERIC(19,4) NOT NULL,
+                
+                -- Real-time specific indicators
+                price_velocity_10 NUMERIC(19,4),
+                price_velocity_50 NUMERIC(19,4),
+                tick_ratio NUMERIC(19,4),
+                tick_vwap_20 NUMERIC(19,4),
+                volume_momentum NUMERIC(19,4),
+                bb_bandwidth NUMERIC(19,4),
+                bb_position NUMERIC(19,4),
+                tick_rsi_14 NUMERIC(19,4),
+                
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                PRIMARY KEY (id, timestamp),
+                CONSTRAINT unique_realtime_analytics UNIQUE (symbol, timestamp)
+            );
+        """)
+        
+        cur.execute("""
+            SELECT create_hypertable('realtime_analytics', 'timestamp', 
+                                     if_not_exists => TRUE,
+                                     chunk_time_interval => INTERVAL '1 day');
         """)
         
         # Retention policies
         print("Setting retention policies...")
         
         # Raw prices - keep for 5 days
-        cur.execute("""
-            SELECT add_retention_policy('realtime_prices', INTERVAL '5 days');
-        """)
+        add_retention_policy_if_not_exists(cur, "realtime_prices", "5 days")
         
+        # Real-time analytics - keep for 1 hour
+        add_retention_policy_if_not_exists(cur, "realtime_analytics", "1 hour")
+
+        # Intraday OLHCV - keep for 2 years
+        add_retention_policy_if_not_exists(cur, "intraday_ohlcv", "2 years")
+
         print("Setting compression policies...")
         cur.execute("""
             ALTER TABLE intraday_ohlcv SET (

@@ -5,9 +5,13 @@ import psycopg2
 import psycopg2.extras
 import os
 from ..websockets.connection_manager import manager
+import logging
+import asyncpg
 
-# Create router
 router = APIRouter()
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 def get_db_connection():
     """Get a connection to the database"""
@@ -171,3 +175,36 @@ async def get_available_indicators():
         "categories": indicators,
         "all": all_indicators
     }
+
+
+@router.get("/realtime/{symbol}")
+async def get_realtime_analytics(
+    symbol: str,
+    limit: int = Query(100, gt=0, le=1000),
+    last_minutes: int = Query(30, gt=0, le=180)
+):
+    """Get real-time analytics for a symbol over the last N minutes"""
+    try:
+        conn = get_db_connection()
+        cur = conn.cursor()
+        
+        # Query real-time analytics
+        query = """
+            SELECT * FROM realtime_analytics
+            WHERE symbol = %s
+            AND timestamp > NOW() - interval '1 minute' * %s
+            ORDER BY timestamp DESC
+            LIMIT %s
+        """
+        
+        cur.execute(query, (symbol, last_minutes, limit))
+        records = cur.fetchall()
+        
+        # Convert to response model
+        result = [dict(record) for record in records]
+        conn.close()
+        
+        return result
+    except Exception as e:
+        logger.error(f"Error retrieving real-time analytics: {e}")
+        raise HTTPException(status_code=500, detail=str(e))

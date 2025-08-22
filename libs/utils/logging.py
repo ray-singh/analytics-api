@@ -1,5 +1,4 @@
 """Centralized logging configuration for all microservices."""
-
 import json
 import logging
 import os

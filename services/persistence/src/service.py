@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 from services.persistence.src.repositories.price_repository import PriceRepository
 from services.persistence.src.repositories.ohlcv_repository import OHLCVRepository
 from services.persistence.src.repositories.analytics_repository import AnalyticsRepository
+from services.persistence.src.repositories.realtime_analytics_repository import RealTimeAnalyticsRepository
 
 logging.basicConfig(
     level=logging.INFO,
@@ -22,6 +23,7 @@ DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:password@localho
 price_repo = PriceRepository(DATABASE_URL)
 ohlcv_repo = OHLCVRepository(DATABASE_URL)
 analytics_repo = AnalyticsRepository(DATABASE_URL)
+realtime_analytics_repo = RealTimeAnalyticsRepository(DATABASE_URL)
 
 async def consume_raw_prices():
     """Consume raw price events and store them in the database"""
@@ -143,6 +145,46 @@ async def consume_analytics():
         await consumer.stop()
         logger.info("Stopped consuming from market.analytics")
 
+async def consume_realtime_analytics():
+    """Consume real-time analytics events and store them in the database"""
+    consumer = AIOKafkaConsumer(
+        "market.analytics.realtime",
+        bootstrap_servers=KAFKA_BOOTSTRAP,
+        group_id="persistence-service-realtime-analytics",
+        auto_offset_reset="latest",
+        value_deserializer=lambda v: json.loads(v.decode())
+    )
+    await consumer.start()
+    
+    try:
+        logger.info("Started consuming from market.analytics.realtime")
+        async for msg in consumer:
+            event = msg.value
+            try:
+                if event.get("event_type") == "analytics.realtime":
+                    symbol = event.get("symbol")
+                    timestamp = event.get("timestamp")
+                    price = event.get("price")
+                    indicators = event.get("indicators", {})
+                    
+                    if symbol and timestamp and price and indicators:
+                        try:
+                            await realtime_analytics_repo.insert_realtime_analytics(
+                                symbol, timestamp, price, indicators
+                            )
+                            logger.debug(f"Stored real-time analytics for {symbol}")
+                        except Exception as e:
+                            logger.error(f"Error storing real-time analytics: {e}")
+                    else:
+                        logger.warning(f"Incomplete real-time analytics event: {event}")
+            except Exception as e:
+                logger.error(f"Error processing real-time analytics: {e}", exc_info=True)
+    except Exception as e:
+        logger.error(f"Consumer error: {e}", exc_info=True)
+    finally:
+        await consumer.stop()
+        logger.info("Stopped consuming from market.analytics.realtime")
+
 async def initialize_database():
     """Initialize database schema if needed"""
     try:
@@ -150,6 +192,7 @@ async def initialize_database():
         await price_repo.init_db()
         await ohlcv_repo.init_db()
         await analytics_repo.init_db()
+        await realtime_analytics_repo.init_db()
         logger.info("Database initialized successfully")
     except Exception as e:
         logger.error(f"Error initializing database: {e}", exc_info=True)
@@ -166,7 +209,8 @@ async def main():
     await asyncio.gather(
         consume_raw_prices(),
         consume_ohlcv_bars(),
-        consume_analytics()
+        consume_analytics(),
+        consume_realtime_analytics()
     )
 
 if __name__ == "__main__":

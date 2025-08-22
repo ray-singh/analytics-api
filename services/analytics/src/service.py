@@ -7,6 +7,7 @@ from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
 import pandas as pd
 import services.analytics.src.indicator.momentum as momentum
 import services.analytics.src.indicator.volatility as volatility
+from services.analytics.src.indicator.realtime import calculate_real_time_indicators
 
 # Set up logging
 logging.basicConfig(
@@ -157,10 +158,122 @@ async def consume_ohlcv_bars():
         await producer.stop()
         logger.info("Analytics service stopped")
 
+async def consume_real_time_prices():
+    """Consume real-time price ticks and produce analytics events"""
+    logger.info(f"Starting real-time analytics service. Consuming from market.prices.raw")
+    
+    # Create consumer
+    consumer = AIOKafkaConsumer(
+        "market.prices.raw",
+        bootstrap_servers=KAFKA_BOOTSTRAP,
+        group_id=f"{CONSUMER_GROUP}-realtime",
+        auto_offset_reset="latest",  # Use latest for real-time data
+        value_deserializer=lambda v: json.loads(v.decode()),
+        enable_auto_commit=True
+    )
+    
+    # Create producer
+    producer = AIOKafkaProducer(
+        bootstrap_servers=KAFKA_BOOTSTRAP
+    )
+    
+    # Start consumer and producer
+    await producer.start()
+    await consumer.start()
+    
+    # In-memory state for real-time analytics
+    realtime_state = {}
+    
+    try:
+        async for msg in consumer:
+            try:
+                event = msg.value
+                
+                # Process real-time tick
+                await process_real_time_tick(producer, event, realtime_state)
+                
+            except Exception as e:
+                logger.error(f"Error processing real-time message: {e}", exc_info=True)
+    finally:
+        await consumer.stop()
+        await producer.stop()
+        logger.info("Real-time analytics service stopped")
+
+async def process_real_time_tick(producer, event, realtime_state):
+    """Process a real-time price tick and calculate analytics"""
+    # Extract fields
+    symbol = event.get("symbol")
+    price = event.get("price")
+    timestamp = event.get("timestamp")
+    volume = event.get("volume", 0)
+    
+    if not all([symbol, price, timestamp]):
+        logger.warning(f"Missing required fields in real-time event: {event}")
+        return
+    
+    # Initialize state for this symbol if needed
+    if symbol not in realtime_state:
+        realtime_state[symbol] = {
+            "prices": [],
+            "timestamps": [],
+            "volumes": [],
+            "last_analytics_time": None
+        }
+    
+    # Add data to state
+    state = realtime_state[symbol]
+    state["prices"].append(float(price))
+    state["timestamps"].append(timestamp)
+    state["volumes"].append(int(volume) if volume else 0)
+    
+    # Keep a rolling window of recent ticks (last 200)
+    max_ticks = 200
+    if len(state["prices"]) > max_ticks:
+        state["prices"] = state["prices"][-max_ticks:]
+        state["timestamps"] = state["timestamps"][-max_ticks:]
+        state["volumes"] = state["volumes"][-max_ticks:]
+    
+    # Only calculate analytics if we have enough data points
+    if len(state["prices"]) < 30:
+        return
+    
+    # Rate limit analytics calculations (max once per second per symbol)
+    current_time = datetime.now()
+    if (state["last_analytics_time"] and 
+        (current_time - state["last_analytics_time"]).total_seconds() < 1):
+        return
+    
+    # Calculate real-time indicators
+    indicators = calculate_real_time_indicators(state)
+    
+    # Update last analytics time
+    state["last_analytics_time"] = current_time
+    
+    # Create and publish analytics event
+    analytics_event = {
+        "event_type": "analytics.realtime",
+        "version": "1.0",
+        "symbol": symbol,
+        "timestamp": timestamp,
+        "price": price,
+        "indicators": indicators
+    }
+    
+    # Use symbol as key for partitioning
+    key = f"{symbol}:realtime".encode()
+    await producer.send(OUTPUT_TOPIC + ".realtime", key=key, 
+                        value=json.dumps(analytics_event).encode())
+    
+    logger.debug(f"Published real-time analytics for {symbol}")
+
 async def main():
     """Main entry point for the analytics service"""
     try:
-        await consume_ohlcv_bars()
+        # Run both services concurrently
+        await asyncio.gather(
+            consume_ohlcv_bars(),
+            consume_real_time_prices()
+        )
     except KeyboardInterrupt:
         logger.info("Service interrupted")
     except Exception as e:

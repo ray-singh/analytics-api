@@ -56,7 +56,6 @@ async def process_ohlcv_bar(producer, event):
         'volume': event["volume"]
     }])
 
-    # Fix the concatenation warning
     if price_history[symbol][interval].empty:
         df = new_row
     else:

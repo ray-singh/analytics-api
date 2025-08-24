@@ -20,6 +20,55 @@ def get_db_connection():
         cursor_factory=psycopg2.extras.RealDictCursor
     )
 
+@router.get("/analytics/available-indicators", summary="Get available indicators")
+async def get_available_indicators():
+    """
+    Get list of all available technical indicators.
+    """
+    indicators = {
+        "moving_averages": [
+            {"id": "sma_5", "name": "Simple Moving Average (5)", "category": "trend"},
+            {"id": "sma_10", "name": "Simple Moving Average (10)", "category": "trend"},
+            {"id": "sma_20", "name": "Simple Moving Average (20)", "category": "trend"},
+            {"id": "sma_50", "name": "Simple Moving Average (50)", "category": "trend"},
+            {"id": "sma_100", "name": "Simple Moving Average (100)", "category": "trend"},
+            {"id": "sma_200", "name": "Simple Moving Average (200)", "category": "trend"},
+            {"id": "ema_9", "name": "Exponential Moving Average (9)", "category": "trend"},
+            {"id": "ema_12", "name": "Exponential Moving Average (12)", "category": "trend"},
+            {"id": "ema_26", "name": "Exponential Moving Average (26)", "category": "trend"},
+            {"id": "ema_50", "name": "Exponential Moving Average (50)", "category": "trend"},
+            {"id": "ema_200", "name": "Exponential Moving Average (200)", "category": "trend"}
+        ],
+        "oscillators": [
+            {"id": "rsi_7", "name": "Relative Strength Index (7)", "category": "momentum"},
+            {"id": "rsi_14", "name": "Relative Strength Index (14)", "category": "momentum"},
+            {"id": "rsi_21", "name": "Relative Strength Index (21)", "category": "momentum"},
+            {"id": "stoch_k", "name": "Stochastic %K", "category": "momentum"},
+            {"id": "stoch_d", "name": "Stochastic %D", "category": "momentum"}
+        ],
+        "trend_indicators": [
+            {"id": "macd", "name": "MACD Line", "category": "trend"},
+            {"id": "macd_signal", "name": "MACD Signal Line", "category": "trend"},
+            {"id": "macd_hist", "name": "MACD Histogram", "category": "trend"}
+        ],
+        "volatility_indicators": [
+            {"id": "bb_upper", "name": "Bollinger Band Upper", "category": "volatility"},
+            {"id": "bb_middle", "name": "Bollinger Band Middle", "category": "volatility"},
+            {"id": "bb_lower", "name": "Bollinger Band Lower", "category": "volatility"},
+            {"id": "atr_14", "name": "Average True Range (14)", "category": "volatility"}
+        ]
+    }
+    
+    # Flatten all indicators for easier lookup
+    all_indicators = []
+    for category, indicators_list in indicators.items():
+        all_indicators.extend(indicators_list)
+    
+    return {
+        "categories": indicators,
+        "all": all_indicators
+    }
+
 @router.get("/analytics/{symbol}", summary="Get technical indicators")
 async def get_analytics(
     symbol: str = Path(..., description="Stock symbol (e.g., AAPL, MSFT)"),
@@ -43,12 +92,7 @@ async def get_analytics(
     """
     # Convert interval string to minutes for database query
     interval_map = {
-        "1min": 1,
         "5min": 5, 
-        "15min": 15,
-        "30min": 30,
-        "1h": 60,
-        "4h": 240,
         "1d": 1440  # Daily data
     }
     
@@ -126,56 +170,6 @@ async def get_analytics(
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
     finally:
         conn.close()
-
-@router.get("/analytics/available-indicators", summary="Get available indicators")
-async def get_available_indicators():
-    """
-    Get list of all available technical indicators.
-    """
-    indicators = {
-        "moving_averages": [
-            {"id": "sma_5", "name": "Simple Moving Average (5)", "category": "trend"},
-            {"id": "sma_10", "name": "Simple Moving Average (10)", "category": "trend"},
-            {"id": "sma_20", "name": "Simple Moving Average (20)", "category": "trend"},
-            {"id": "sma_50", "name": "Simple Moving Average (50)", "category": "trend"},
-            {"id": "sma_100", "name": "Simple Moving Average (100)", "category": "trend"},
-            {"id": "sma_200", "name": "Simple Moving Average (200)", "category": "trend"},
-            {"id": "ema_9", "name": "Exponential Moving Average (9)", "category": "trend"},
-            {"id": "ema_12", "name": "Exponential Moving Average (12)", "category": "trend"},
-            {"id": "ema_26", "name": "Exponential Moving Average (26)", "category": "trend"},
-            {"id": "ema_50", "name": "Exponential Moving Average (50)", "category": "trend"},
-            {"id": "ema_200", "name": "Exponential Moving Average (200)", "category": "trend"}
-        ],
-        "oscillators": [
-            {"id": "rsi_7", "name": "Relative Strength Index (7)", "category": "momentum"},
-            {"id": "rsi_14", "name": "Relative Strength Index (14)", "category": "momentum"},
-            {"id": "rsi_21", "name": "Relative Strength Index (21)", "category": "momentum"},
-            {"id": "stoch_k", "name": "Stochastic %K", "category": "momentum"},
-            {"id": "stoch_d", "name": "Stochastic %D", "category": "momentum"}
-        ],
-        "trend_indicators": [
-            {"id": "macd", "name": "MACD Line", "category": "trend"},
-            {"id": "macd_signal", "name": "MACD Signal Line", "category": "trend"},
-            {"id": "macd_hist", "name": "MACD Histogram", "category": "trend"}
-        ],
-        "volatility_indicators": [
-            {"id": "bb_upper", "name": "Bollinger Band Upper", "category": "volatility"},
-            {"id": "bb_middle", "name": "Bollinger Band Middle", "category": "volatility"},
-            {"id": "bb_lower", "name": "Bollinger Band Lower", "category": "volatility"},
-            {"id": "atr_14", "name": "Average True Range (14)", "category": "volatility"}
-        ]
-    }
-    
-    # Flatten all indicators for easier lookup
-    all_indicators = []
-    for category, indicators_list in indicators.items():
-        all_indicators.extend(indicators_list)
-    
-    return {
-        "categories": indicators,
-        "all": all_indicators
-    }
-
 
 @router.get("/realtime/{symbol}")
 async def get_realtime_analytics(

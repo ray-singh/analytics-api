@@ -136,9 +136,12 @@ class BackfillManager:
 
                     for idx, row in combined_df.iterrows():
                         try:
+                            ts = idx
+                            if ts.tzinfo is None or ts.tzinfo.utcoffset(ts) is None:
+                                ts = ts.tz_localize("UTC")
                             await self.repo.insert_intraday_ohlcv(
                                 symbol=symbol,
-                                timestamp=idx,
+                                timestamp=ts,
                                 open_price=float(row['open']),
                                 high=float(row['high']),
                                 low=float(row['low']),
@@ -161,16 +164,19 @@ class BackfillManager:
             logger.error(f"Error in fetch_intraday_data: {e}", exc_info=True)
             return pd.DataFrame()
 
-    async def fetch_daily_data(self, symbol, start_date, end_date):
+    async def fetch_daily_data(self, symbol, start_date=None, end_date=None):
         """Fetch daily historical data using AlphaVantage"""
         try:
             # Use AlphaVantage for daily data
             logger.info(f"Fetching daily data for {symbol} from AlphaVantage")
-            df = await self.alphavantage_client.fetch_historical_daily(
-                symbol=symbol,
-                start_date=start_date,
-                end_date=end_date
-            )
+            if start_date and end_date:
+                df = await self.alphavantage_client.fetch_historical_daily(
+                    symbol=symbol,
+                    start_date=start_date,
+                    end_date=end_date
+                )
+            else:
+                df = await self.alphavantage_client.fetch_daily_adjusted(symbol=symbol, outputsize="full")
             
             if len(df) > 0:
                 logger.info(f"Using AlphaVantage data for {symbol} ({len(df)} records)")                

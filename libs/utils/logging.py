@@ -22,7 +22,6 @@ class JsonFormatter(logging.Formatter):
             "service": os.environ.get("SERVICE_NAME", settings.APP_NAME),
         }
         
-        # Add the exception info if available
         if record.exc_info:
             log_data["exception"] = {
                 "type": record.exc_info[0].__name__,
@@ -57,7 +56,6 @@ def setup_logging(service_name: Optional[str] = None, log_level: Optional[str] =
     Returns:
         Logger instance configured for the service
     """
-    # Set defaults from settings if not provided
     service_name = service_name or settings.APP_NAME
     log_level_str = log_level or settings.LOG_LEVEL
     log_level_num = getattr(logging, log_level_str.upper(), logging.INFO)
@@ -68,7 +66,7 @@ def setup_logging(service_name: Optional[str] = None, log_level: Optional[str] =
     # Create logger
     logger = logging.getLogger(service_name)
     logger.setLevel(log_level_num)
-    logger.handlers = []  # Remove any existing handlers
+    logger.handlers = []  
     
     # Create console handler
     handler = logging.StreamHandler(sys.stdout)

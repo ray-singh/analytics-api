@@ -41,7 +41,7 @@ class AlphaVantageClient:
     async def fetch_daily_adjusted(
         self,
         symbol: str,
-        outputsize: str = "full"  # "compact" for 100 days, "full" for 20+ years
+        outputsize: str = "full"  
     ) -> pd.DataFrame:
         """
         Fetch daily OHLCV data with adjusted close from Alpha Vantage

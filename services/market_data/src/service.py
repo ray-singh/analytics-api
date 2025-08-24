@@ -10,6 +10,7 @@ from services.market_data.src.clients.alphavantage_client import AlphaVantageCli
 from services.market_data.src.clients.yfinance_client import YFinanceClient
 from services.market_data.src.backfill.backfill_manager import BackfillManager
 from services.market_data.src.repositories.ohlcv_repository import OHLCVRepository
+from datetime import timezone as tz
 
 logging.basicConfig(
     level=logging.INFO,
@@ -126,10 +127,7 @@ class MarketDataService:
         """        
         for symbol in SYMBOLS:
             try:
-                # Get the most recent intraday record for this symbol
-                latest = await self.repo.get_latest_intraday(symbol, 5)  # 5 minute interval
-                
-                # Check if we need to fetch data
+                latest = await self.repo.get_latest_intraday(symbol, 5)  
                 need_update = False
                 
                 if not latest:
@@ -139,13 +137,10 @@ class MarketDataService:
                     end_date = datetime.now().strftime('%Y-%m-%d')
                 else:
                     try:
-                        # Handle timestamp with timezone awareness
                         if isinstance(latest['timestamp'], str):
-                            # Try to parse with timezone
                             try:
                                 latest_dt = datetime.fromisoformat(latest['timestamp'])
                             except ValueError:
-                                # If fromisoformat fails, try a more forgiving approach
                                 import dateutil.parser
                                 latest_dt = dateutil.parser.parse(latest['timestamp'])
                         else:
@@ -156,31 +151,23 @@ class MarketDataService:
                         
                         # If latest_dt is timezone-aware but current_time is not
                         if latest_dt.tzinfo is not None and current_time.tzinfo is None:
-                            # Make current_time timezone-aware with UTC
-                            from datetime import timezone as tz
                             current_time = current_time.replace(tzinfo=tz.utc)
                         # If current_time is timezone-aware but latest_dt is not
                         elif latest_dt.tzinfo is None and current_time.tzinfo is not None:
-                            # Make latest_dt timezone-aware with UTC
-                            from datetime import timezone as tz
                             latest_dt = latest_dt.replace(tzinfo=tz.utc)
                         
-                        # Now they should be comparable
                         if (current_time - latest_dt).total_seconds() > 300:  # 5 minutes in seconds
                             logger.info(f"Intraday data for {symbol} outdated, fetching updates")
                             need_update = True
-                            # Start fetching from the last entry
                             start_date = latest_dt.strftime('%Y-%m-%d')
                             end_date = datetime.now().strftime('%Y-%m-%d')
                     except Exception as e:
                         logger.error(f"Error processing timestamp for {symbol}: {e}")
-                        # If we can't process the timestamp, assume we need an update
                         need_update = True
                         start_date = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
                         end_date = datetime.now().strftime('%Y-%m-%d')
                 
                 if need_update:
-                    # Use backfill manager to fetch data
                     await self.backfill_manager.fetch_intraday_data(
                         symbol=symbol,
                         interval="5min",
@@ -199,46 +186,35 @@ class MarketDataService:
         """        
         for symbol in SYMBOLS:
             try:
-                # Get the most recent daily record for this symbol
                 latest = await self.repo.get_latest_daily(symbol)
-                
-                # Check if we need to fetch data
                 need_update = False
                 
                 if not latest:
                     logger.info(f"No daily data for {symbol}, fetching initial data")
                     need_update = True
-                    start_date = (datetime.now() - timedelta(days=365)).strftime('%Y-%m-%d')
-                    end_date = datetime.now().strftime('%Y-%m-%d')
+                    start_date = None
+                    end_date = None
                 else:
                     try:
                         # Handle timestamp with timezone awareness
                         if isinstance(latest['timestamp'], str):
-                            # Try to parse with timezone
                             try:
                                 latest_dt = datetime.fromisoformat(latest['timestamp'])
                             except ValueError:
-                                # If fromisoformat fails, try a more forgiving approach
                                 import dateutil.parser
                                 latest_dt = dateutil.parser.parse(latest['timestamp'])
                         else:
                             latest_dt = latest['timestamp']
                         
-                        # Ensure both datetimes are timezone-aware or both are naive
                         current_time = datetime.now()
                         
                         # If latest_dt is timezone-aware but current_time is not
                         if latest_dt.tzinfo is not None and current_time.tzinfo is None:
-                            # Make current_time timezone-aware with UTC
-                            from datetime import timezone as tz
                             current_time = current_time.replace(tzinfo=tz.utc)
                         # If current_time is timezone-aware but latest_dt is not
                         elif latest_dt.tzinfo is None and current_time.tzinfo is not None:
-                            # Make latest_dt timezone-aware with UTC
-                            from datetime import timezone as tz
                             latest_dt = latest_dt.replace(tzinfo=tz.utc)
                         
-                        # Now they should be comparable
                         if (current_time - latest_dt).total_seconds() > 86400:  # 24 hours in seconds
                             logger.info(f"Daily data for {symbol} outdated, fetching updates")
                             need_update = True

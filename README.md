@@ -1,14 +1,23 @@
-# Event-Driven Microservice Stock Analytics System
+# Distributed Microservices for Market Analytics
 
 ## Overview
-This project implements an event-driven microservice architecture for real-time and historical stock analytics using Python, FastAPI, Kafka, and TimescaleDB.
+A scalable analytics platform for real-time and historical financial market data, built with Python, Kafka, TimescaleDB, and FastAPI. The system leverages distributed microservices to ingest, process, analyze, and serve technical indicators for stocks and other instruments. Due to API rate limiting and cost contraints, the system only supports one ticker (AAPL), but can be easily scaled to include several financial instruments. 
+
+## Architecture Highlights
+- **Distributed Microservices:** Each core function (ingestion, analytics, persistence, API, aggregation) runs as an independent, containerized service.
+- **Event-Driven Processing:** Kafka streams enable asynchronous communication and analytics computation.
+- **Time-Series Database:** TimescaleDB stores raw and processed OHLCV data with retention and compression policies for efficient analytics.
+- **Backfill Capability:** Historical data can be replayed into the analytics pipeline to ensure complete coverage of technical indicators.
+- **Extensible Indicator Framework:** Modular design for adding new technical indicators and analytics features.
 
 ## Components
-- **Market Data Ingestion Service** (`src/ingestion_service.py`): Fetches historical data, streams real-time stock prices, and publishes them to Kafka.
-- **Analytics Service** (`src/analytics_service.py`): Consumes price events, calculates a comprehensive suite of technical indicators (e.g., SMA, EMA, RSI, MACD, Bollinger Bands), and stores analytics in the database.
-- **API Service** (`src/main.py`): FastAPI app exposing endpoints to query real-time and historical analytics.
-- **Database** (`src/db.py`): TimescaleDB with a three-tier architecture for real-time, intraday, and historical data storage, optimized for time-series analytics.
-- **Kafka + Zookeeper**: Event broker for real-time data streaming and analytics.
+- **Market Data Service:** Fetches real-time and historical OHLCV data from external APIs (Alpha Vantage, TwelveData, Yahoo Finance) and streams to Kafka.
+- **Persistence Service:** Stores raw price data and analytics results in TimescaleDB.
+- **Analytics Service:** Consumes price and OHLCV events, calculates technical indicators (momentum, volatility, real-time), and publishes analytics events.
+- **Aggregation Service:** Aggregates lower-interval bars into higher intervals for downstream analytics.
+- **API Service:** Exposes REST and WebSocket endpoints for querying prices, analytics, and available indicators.
+- **Backfill Scripts:** Replay historical OHLCV data into Kafka for analytics backfill.
+- **Infrastructure:** Kafka, Zookeeper, TimescaleDB, pgAdmin.
 
 ## Features
 - **Real-Time Data Streaming**: Streams live stock prices via WebSocket and publishes them to Kafka.

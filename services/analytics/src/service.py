@@ -8,16 +8,14 @@ import pandas as pd
 import services.analytics.src.indicator.momentum as momentum
 import services.analytics.src.indicator.volatility as volatility
 from services.analytics.src.indicator.realtime import calculate_real_time_indicators
-from prometheus_client import start_http_server
+from prometheus_client import start_http_server, Counter, Histogram
 
-# Set up logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger("analytics-service")
 
-# Environment variables
 KAFKA_BOOTSTRAP = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
 CONSUMER_GROUP = os.getenv("CONSUMER_GROUP", "analytics-service")
 INPUT_TOPIC = os.getenv("INPUT_TOPIC", "market.prices.ohlcv")
@@ -29,6 +27,17 @@ start_http_server(8001)
 # In-memory price histories for technical analysis
 # Structure: {symbol: {interval: pd.DataFrame}}
 price_history = {}
+
+# Prometheus metrics
+PROCESSING_TIME = Histogram("analytics_processing_time", "Time spent processing analytics events", ["symbol", "interval"])
+
+kafka_messages_consumed_total = Counter(
+    "kafka_messages_consumed_total",
+    "Total Kafka messages consumed",
+    ["job"]
+)
+
+ANALYTICS_ERRORS = Counter("analytics_errors_total", "Total analytics errors")
 
 async def process_ohlcv_bar(producer, event):
     """Process an OHLCV bar event and calculate analytics"""
@@ -70,10 +79,8 @@ async def process_ohlcv_bar(producer, event):
     if len(df) > MAX_HISTORY:
         df = df.tail(MAX_HISTORY)
     
-    # Update the stored history
     price_history[symbol][interval] = df
     
-    # Skip if we don't have enough data yet
     if len(df) < 30:
         logger.info(f"Not enough data for {symbol} {interval}min ({len(df)} bars). Need 30.")
         return
@@ -101,7 +108,7 @@ async def process_ohlcv_bar(producer, event):
             "indicators": indicators
         }
         
-        # Use symbol + interval as key for partitioning
+        # symbol + interval as key for partitioning
         key = f"{symbol}:{interval}".encode()
         await producer.send(OUTPUT_TOPIC, key=key, value=json.dumps(analytics_event).encode())
         
@@ -120,13 +127,11 @@ async def consume_ohlcv_bars():
         value_deserializer=lambda v: json.loads(v.decode()),
         enable_auto_commit=True
     )
-    
-    # Create producer
+
     producer = AIOKafkaProducer(
         bootstrap_servers=KAFKA_BOOTSTRAP
     )
     
-    # Start consumer and producer
     await producer.start()
     await consumer.start()
     
@@ -139,13 +144,14 @@ async def consume_ohlcv_bars():
                 # Log the event for debugging
                 logger.debug(f"Received event: {event}")
                 
-                # Validate event structure - we need OHLC data and a timestamp field
+                # Validate event structure (we need OHLC data and a timestamp field)
                 required_fields = ["symbol", "interval_minutes", "open", "high", "low", "close"]
                 timestamp_fields = ["timestamp", "bar_end_ts"]
                 
                 if (event.get("event_type") == "price.ohlcv" and 
                     all(k in event for k in required_fields) and
                     any(t in event for t in timestamp_fields)):
+                    kafka_messages_consumed_total.labels(job="analytics").inc()
                     await process_ohlcv_bar(producer, event)
                 else:
                     missing = [k for k in required_fields if k not in event]
@@ -154,6 +160,7 @@ async def consume_ohlcv_bars():
                     logger.warning(f"Invalid event structure: {event.get('event_type', 'unknown')}, missing: {missing}")
             except Exception as e:
                 logger.error(f"Error processing message: {e}", exc_info=True)
+                ANALYTICS_ERRORS.inc()
     finally:
         # Clean up
         await consumer.stop()
@@ -163,8 +170,6 @@ async def consume_ohlcv_bars():
 async def consume_real_time_prices():
     """Consume real-time price ticks and produce analytics events"""
     logger.info(f"Starting real-time analytics service. Consuming from market.prices.raw")
-    
-    # Create consumer
     consumer = AIOKafkaConsumer(
         "market.prices.raw",
         bootstrap_servers=KAFKA_BOOTSTRAP,
@@ -174,28 +179,25 @@ async def consume_real_time_prices():
         enable_auto_commit=True
     )
     
-    # Create producer
     producer = AIOKafkaProducer(
         bootstrap_servers=KAFKA_BOOTSTRAP
     )
     
-    # Start consumer and producer
     await producer.start()
     await consumer.start()
     
     # In-memory state for real-time analytics
     realtime_state = {}
-    
     try:
         async for msg in consumer:
             try:
                 event = msg.value
-                
-                # Process real-time tick
                 await process_real_time_tick(producer, event, realtime_state)
+                kafka_messages_consumed_total.labels(job="analytics").inc()
                 
             except Exception as e:
                 logger.error(f"Error processing real-time message: {e}", exc_info=True)
+                ANALYTICS_ERRORS.inc()
     finally:
         await consumer.stop()
         await producer.stop()
@@ -235,7 +237,6 @@ async def process_real_time_tick(producer, event, realtime_state):
         state["timestamps"] = state["timestamps"][-max_ticks:]
         state["volumes"] = state["volumes"][-max_ticks:]
     
-    # Only calculate analytics if we have enough data points
     if len(state["prices"]) < 30:
         return
     
@@ -247,8 +248,6 @@ async def process_real_time_tick(producer, event, realtime_state):
     
     # Calculate real-time indicators
     indicators = calculate_real_time_indicators(state)
-    
-    # Update last analytics time
     state["last_analytics_time"] = current_time
     
     # Create and publish analytics event
@@ -271,7 +270,6 @@ async def process_real_time_tick(producer, event, realtime_state):
 async def main():
     """Main entry point for the analytics service"""
     try:
-        # Run both services concurrently
         await asyncio.gather(
             consume_ohlcv_bars(),
             consume_real_time_prices()

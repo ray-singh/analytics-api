@@ -8,7 +8,7 @@ from services.persistence.src.repositories.price_repository import PriceReposito
 from services.persistence.src.repositories.ohlcv_repository import OHLCVRepository
 from services.persistence.src.repositories.analytics_repository import AnalyticsRepository
 from services.persistence.src.repositories.realtime_analytics_repository import RealTimeAnalyticsRepository
-from prometheus_client import start_http_server
+from prometheus_client import start_http_server, Counter
 
 logging.basicConfig(
     level=logging.INFO,
@@ -25,6 +25,9 @@ price_repo = PriceRepository(DATABASE_URL)
 ohlcv_repo = OHLCVRepository(DATABASE_URL)
 analytics_repo = AnalyticsRepository(DATABASE_URL)
 realtime_analytics_repo = RealTimeAnalyticsRepository(DATABASE_URL)
+
+RECORDS_STORED = Counter("records_stored_total", "Total records stored in DB", ["type"])
+PERSISTENCE_ERRORS = Counter("persistence_errors_total", "Total persistence errors")
 
 start_http_server(8001)
 
@@ -51,8 +54,10 @@ async def consume_raw_prices():
                     volume=event.get("volume", 0),
                     source=event.get("source", "unknown")
                     )
+                RECORDS_STORED.labels(type="raw_price").inc()
             except Exception as e:
                 logger.error(f"Error processing raw price: {e}", exc_info=True)
+                PERSISTENCE_ERRORS.inc()
     except Exception as e:
         logger.error(f"Consumer error: {e}", exc_info=True)
     finally:
@@ -89,6 +94,7 @@ async def consume_ohlcv_bars():
                             interval_minutes=bar["interval_minutes"],
                             source=bar.get("source", "aggregator")
                         )
+                        RECORDS_STORED.labels(type="intraday_ohlcv").inc()
                     else:  # Daily data
                         await ohlcv_repo.insert_historical_daily(
                             symbol=bar["symbol"],
@@ -100,8 +106,10 @@ async def consume_ohlcv_bars():
                             volume=bar["volume"],
                             source=bar.get("source", "aggregator")
                         )
+                        RECORDS_STORED.labels(type="daily_ohlcv").inc()
             except Exception as e:
                 logger.error(f"Error processing OHLCV bar: {e}", exc_info=True)
+                PERSISTENCE_ERRORS.inc()
     except Exception as e:
         logger.error(f"Consumer error: {e}", exc_info=True)
     finally:
@@ -133,6 +141,7 @@ async def consume_analytics():
                         interval_minutes=event["interval_minutes"],
                         indicators=event["indicators"]
                     )
+                    RECORDS_STORED.labels(type="intraday_analytics").inc()
                 else:  # Daily data
                     await analytics_repo.insert_daily_analytics(
                         symbol=event["symbol"],
@@ -140,8 +149,10 @@ async def consume_analytics():
                         price=event["price"],
                         indicators=event["indicators"]
                     )
+                    RECORDS_STORED.labels(type="daily_analytics").inc()
             except Exception as e:
                 logger.error(f"Error processing analytics: {e}", exc_info=True)
+                PERSISTENCE_ERRORS.inc()
     except Exception as e:
         logger.error(f"Consumer error: {e}", exc_info=True)
     finally:
@@ -176,12 +187,15 @@ async def consume_realtime_analytics():
                                 symbol, timestamp, price, indicators
                             )
                             logger.debug(f"Stored real-time analytics for {symbol}")
+                            RECORDS_STORED.labels(type="realtime_analytics").inc()
                         except Exception as e:
                             logger.error(f"Error storing real-time analytics: {e}")
+                            PERSISTENCE_ERRORS.inc()
                     else:
                         logger.warning(f"Incomplete real-time analytics event: {event}")
             except Exception as e:
                 logger.error(f"Error processing real-time analytics: {e}", exc_info=True)
+                PERSISTENCE_ERRORS.inc()
     except Exception as e:
         logger.error(f"Consumer error: {e}", exc_info=True)
     finally:

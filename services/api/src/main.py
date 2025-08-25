@@ -3,35 +3,44 @@ from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 import os
 from dotenv import load_dotenv
-from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
-
-# Import routers
+from prometheus_client import Counter, generate_latest, CONTENT_TYPE_LATEST
 from .routers import prices, analytics
 from .websockets.connection_manager import router as websocket_router
 
-# Load environment variables
 load_dotenv()
 
-# Create FastAPI application
 app = FastAPI(
     title="Market Analytics API",
     description="API for real-time market data and analytics",
     version="1.0.0",
 )
 
-# Configure CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, replace with specific origins
+    allow_origins=["*"],  # Replace with specific origins
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Include routers
 app.include_router(prices.router, prefix="/api/v1", tags=["prices"])
 app.include_router(analytics.router, prefix="/api/v1", tags=["analytics"])
 app.include_router(websocket_router, tags=["websockets"])
+
+REQUEST_COUNT = Counter("api_requests_total", "Total API requests", ["endpoint", "method"])
+ERROR_COUNT = Counter("api_errors_total", "Total API errors", ["endpoint", "method"])
+
+@app.middleware("http")
+async def prometheus_middleware(request, call_next):
+    endpoint = request.url.path
+    method = request.method
+    REQUEST_COUNT.labels(endpoint=endpoint, method=method).inc()
+    try:
+        response = await call_next(request)
+        return response
+    except Exception:
+        ERROR_COUNT.labels(endpoint=endpoint, method=method).inc()
+        raise
 
 @app.get("/metrics")
 def metrics():

@@ -11,7 +11,7 @@ from services.market_data.src.clients.yfinance_client import YFinanceClient
 from services.market_data.src.backfill.backfill_manager import BackfillManager
 from services.market_data.src.repositories.ohlcv_repository import OHLCVRepository
 from datetime import timezone as tz
-from prometheus_client import start_http_server
+from prometheus_client import start_http_server, Counter
 
 logging.basicConfig(
     level=logging.INFO,
@@ -30,6 +30,8 @@ TWELVEDATA_API_KEY = os.getenv("TWELVEDATA_API_KEY")
 ALPHA_VANTAGE_API_KEY = os.getenv("ALPHA_VANTAGE_API_KEY")
 
 start_http_server(8001)
+PRICE_UPDATES_PUBLISHED = Counter("price_updates_published_total", "Total price updates published", ["symbol"])
+MARKET_DATA_ERRORS = Counter("market_data_errors_total", "Total market data errors")
 
 class MarketDataService:
     def __init__(self):
@@ -91,9 +93,11 @@ class MarketDataService:
                     PRICE_TOPIC,
                     json.dumps(price_data).encode("utf-8")
                 )
+                PRICE_UPDATES_PUBLISHED.labels(symbol=symbol).inc()
                 
             except Exception as e:
                 logger.error(f"Error publishing price update for {symbol}: {e}")
+                MARKET_DATA_ERRORS.inc()
         
         await self.yf_client.subscribe_to_price_updates(symbol, on_price_update)
         try:

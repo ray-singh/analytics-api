@@ -4,10 +4,9 @@ import os
 import logging
 from datetime import datetime
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
-from prometheus_client import start_http_server
+from prometheus_client import start_http_server, Counter
 from .aggregators.bar_aggregator import BarAggregator
 
-# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
@@ -19,8 +18,9 @@ INPUT_TOPIC = os.getenv("INPUT_TOPIC", "market.prices.raw")
 OUTPUT_TOPIC = os.getenv("OUTPUT_TOPIC", "market.prices.ohlcv")
 CONSUMER_GROUP = os.getenv("CONSUMER_GROUP", "aggregation-service")
 
-# Start metrics server on port 8001
 start_http_server(8001)
+BARS_AGGREGATED = Counter("bars_aggregated_total", "Total OHLCV bars aggregated", ["symbol", "interval"])
+AGG_ERRORS = Counter("aggregation_errors_total", "Total aggregation errors")
 
 async def run_service():
     """Main service function that processes raw price events into OHLCV bars"""
@@ -92,11 +92,13 @@ async def run_service():
                             value=json.dumps(bar).encode()
                         )
                         logger.info(f"Published {interval}min bar for {symbol}: {bar['close']}")
+                        BARS_AGGREGATED.labels(symbol=symbol, interval=str(interval)).inc()
                 else:
                     logger.warning(f"Skipping event, missing required fields: {event}")
             
             except Exception as e:
                 logger.error(f"Error processing message: {e}", exc_info=True)
+                AGG_ERRORS.inc()
                 
     except Exception as e:
         logger.error(f"Aggregation service error: {e}", exc_info=True)

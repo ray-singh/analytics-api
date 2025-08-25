@@ -8,6 +8,7 @@ from services.persistence.src.repositories.price_repository import PriceReposito
 from services.persistence.src.repositories.ohlcv_repository import OHLCVRepository
 from services.persistence.src.repositories.analytics_repository import AnalyticsRepository
 from services.persistence.src.repositories.realtime_analytics_repository import RealTimeAnalyticsRepository
+from prometheus_client import start_http_server
 
 logging.basicConfig(
     level=logging.INFO,
@@ -24,6 +25,8 @@ price_repo = PriceRepository(DATABASE_URL)
 ohlcv_repo = OHLCVRepository(DATABASE_URL)
 analytics_repo = AnalyticsRepository(DATABASE_URL)
 realtime_analytics_repo = RealTimeAnalyticsRepository(DATABASE_URL)
+
+start_http_server(8001)
 
 async def consume_raw_prices():
     """Consume raw price events and store them in the database"""

@@ -11,6 +11,7 @@ from services.market_data.src.clients.yfinance_client import YFinanceClient
 from services.market_data.src.backfill.backfill_manager import BackfillManager
 from services.market_data.src.repositories.ohlcv_repository import OHLCVRepository
 from datetime import timezone as tz
+from prometheus_client import start_http_server
 
 logging.basicConfig(
     level=logging.INFO,
@@ -27,6 +28,8 @@ BACKFILL_STATUS_TOPIC = os.getenv("BACKFILL_STATUS_TOPIC", "command.backfill.sta
 SYMBOLS = os.getenv("STREAM_SYMBOLS", "AAPL").split(",")
 TWELVEDATA_API_KEY = os.getenv("TWELVEDATA_API_KEY")
 ALPHA_VANTAGE_API_KEY = os.getenv("ALPHA_VANTAGE_API_KEY")
+
+start_http_server(8001)
 
 class MarketDataService:
     def __init__(self):

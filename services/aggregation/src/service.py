@@ -4,7 +4,7 @@ import os
 import logging
 from datetime import datetime
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer
-
+from prometheus_client import start_http_server
 from .aggregators.bar_aggregator import BarAggregator
 
 # Configure logging
@@ -18,6 +18,9 @@ KAFKA_BOOTSTRAP = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
 INPUT_TOPIC = os.getenv("INPUT_TOPIC", "market.prices.raw")
 OUTPUT_TOPIC = os.getenv("OUTPUT_TOPIC", "market.prices.ohlcv")
 CONSUMER_GROUP = os.getenv("CONSUMER_GROUP", "aggregation-service")
+
+# Start metrics server on port 8001
+start_http_server(8001)
 
 async def run_service():
     """Main service function that processes raw price events into OHLCV bars"""

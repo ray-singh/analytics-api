@@ -1,8 +1,9 @@
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 import uvicorn
 import os
 from dotenv import load_dotenv
+from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 
 # Import routers
 from .routers import prices, analytics
@@ -31,6 +32,10 @@ app.add_middleware(
 app.include_router(prices.router, prefix="/api/v1", tags=["prices"])
 app.include_router(analytics.router, prefix="/api/v1", tags=["analytics"])
 app.include_router(websocket_router, tags=["websockets"])
+
+@app.get("/metrics")
+def metrics():
+    return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 @app.get("/", tags=["health"])
 async def root():

@@ -8,6 +8,7 @@ import pandas as pd
 import services.analytics.src.indicator.momentum as momentum
 import services.analytics.src.indicator.volatility as volatility
 from services.analytics.src.indicator.realtime import calculate_real_time_indicators
+from prometheus_client import start_http_server
 
 # Set up logging
 logging.basicConfig(
@@ -22,6 +23,8 @@ CONSUMER_GROUP = os.getenv("CONSUMER_GROUP", "analytics-service")
 INPUT_TOPIC = os.getenv("INPUT_TOPIC", "market.prices.ohlcv")
 OUTPUT_TOPIC = os.getenv("OUTPUT_TOPIC", "market.analytics")
 MAX_HISTORY = int(os.getenv("MAX_HISTORY", "200"))  
+
+start_http_server(8001)
 
 # In-memory price histories for technical analysis
 # Structure: {symbol: {interval: pd.DataFrame}}

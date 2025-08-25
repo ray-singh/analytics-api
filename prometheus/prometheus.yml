@@ -1,0 +1,13 @@
+global:
+  scrape_interval: 15s
+
+scrape_configs:
+  - job_name: 'api'
+    static_configs:
+      - targets: ['api:8000']
+  - job_name: 'analytics'
+    static_configs:
+      - targets: ['analytics:8001']
+  - job_name: 'market-data'
+    static_configs:
+      - targets: ['market-data:8001']

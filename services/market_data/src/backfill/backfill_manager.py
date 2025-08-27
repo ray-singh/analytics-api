@@ -11,20 +11,39 @@ from ..clients.twelvedata_client import TwelveDataClient
 from ..clients.alphavantage_client import AlphaVantageClient
 from ..repositories.ohlcv_repository import OHLCVRepository
 
+
 logger = logging.getLogger('market_data_service.backfill')
+
+PRICE_TOPIC = os.getenv("PRICE_TOPIC", "market.prices.raw")
 
 class BackfillManager:
     """Manager for handling historical data backfilling"""
     
     def __init__(self):
-        self.yfinance_client = YFinanceClient()  # Keep as fallback
+        self.yfinance_client = YFinanceClient() 
         self.twelvedata_client = TwelveDataClient()
         self.alphavantage_client = AlphaVantageClient()
         self.kafka_bootstrap = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
         self.db_url = os.getenv("DATABASE_URL", "postgresql://postgres:password@timescaledb:5432/stockanalytics")
         self.repo = OHLCVRepository(self.db_url)
+        self.producer = None
 
+    async def init_producer(self):
+        """Initialize the Kafka producer asynchronously"""
+        if self.producer is None:
+            self.producer = AIOKafkaProducer(
+                bootstrap_servers=self.kafka_bootstrap,
+                retry_backoff_ms=500,
+                request_timeout_ms=30000
+            )
+            await self.producer.start()
     
+    async def close_producer(self):
+        """Close the Kafka producer asynchronously"""
+        if self.producer is not None:
+            await self.producer.stop()
+            self.producer = None
+
     async def fetch_intraday_data(self, symbol, interval, start_date, end_date):
         """
         Fetch intraday historical data using TwelveData with intelligent chunking
@@ -150,11 +169,24 @@ class BackfillManager:
                                 interval_minutes=interval_minutes,
                                 source='twelvedata'
                             )
+                            await self.init_producer()
+                            event = {
+                            "event_type": "price.ohlcv",
+                            "symbol": symbol,
+                            "interval_minutes":interval_minutes,
+                            "open": float(row["open"]),
+                            "high": float(row["high"]),
+                            "low": float(row["low"]),
+                            "close": float(row["close"]),
+                            "volume": int(row["volume"]),
+                            "timestamp": ts.isoformat()
+                            }
+                            await self.producer.send_and_wait("market.prices.ohlcv", json.dumps(event).encode())
                         except Exception as e:
                             logger.error(f"Error inserting intraday data: {e}")
         
                     logger.info(f"Successfully stored {len(combined_df)} intraday bars for {symbol} in database")
-                
+                await self.close_producer()
                 return combined_df
             
             logger.warning(f"No historical intraday data found for {symbol}")
@@ -192,11 +224,24 @@ class BackfillManager:
                             volume=int(row['volume']),
                             source='alphavantage'
                         )
+                        await self.init_producer() 
+                        event = {
+                        "event_type": "price.ohlcv",
+                        "symbol": symbol,
+                        "interval_minutes": 1440,
+                        "open": float(row["open"]),
+                        "high": float(row["high"]),
+                        "low": float(row["low"]),
+                        "close": float(row["close"]),
+                        "volume": int(row["volume"]),
+                        "timestamp": date.isoformat()
+                        }
+                        await self.producer.send_and_wait("market.prices.ohlcv", json.dumps(event).encode())
                     except Exception as e:
                         logger.error(f"Error inserting daily data: {e}")
                 
                 logger.info(f"Successfully stored {len(df)} daily bars for {symbol} in database")
-                
+                await self.close_producer()
                 return df
             
             logger.warning(f"No historical daily data found for {symbol}")
@@ -206,7 +251,6 @@ class BackfillManager:
             logger.error(f"Error fetching daily historical data: {e}", exc_info=True)
             return pd.DataFrame()
 
-    
     def _convert_interval_to_minutes(self, interval):
         """Convert interval string to minutes"""
         if "min" in interval:

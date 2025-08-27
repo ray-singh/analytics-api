@@ -202,22 +202,6 @@ services:
       - DATABASE_URL=postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-password}@timescaledb:5432/${POSTGRES_DB:-stockanalytics}
     profiles:
       - init
-  
-  backfill-analytics:
-    build:
-      context: .
-      dockerfile: Dockerfile.init
-      args:
-        BASE_IMAGE: analytics-api-base:latest
-    environment:
-      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
-      - DATABASE_URL=postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-password}@timescaledb:5432/${POSTGRES_DB:-stockanalytics}
-    depends_on:
-      - kafka
-      - timescaledb
-    command: python -m scripts.backfill_analytics
-    profiles:
-      - init
 
   pgadmin:
     image: dpage/pgadmin4

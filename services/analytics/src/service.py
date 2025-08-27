@@ -73,6 +73,7 @@ async def process_ohlcv_bar(producer, event):
     else:
         df = pd.concat([price_history[symbol][interval], new_row], ignore_index=True)
     
+    df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
     df = df.sort_values(by='timestamp').reset_index(drop=True)
     
     # Trim to keep only recent history

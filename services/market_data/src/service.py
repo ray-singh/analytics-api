@@ -60,11 +60,7 @@ class MarketDataService:
         await self.producer.start()
         logger.info("Connected to Kafka")
         
-        logger.info(f"Starting market data streams for symbols: {SYMBOLS}")
-        
-        # Start backfill request listener
-        # self._tasks.append(asyncio.create_task(self.listen_for_backfill_requests()))
-        
+        logger.info(f"Starting market data streams for symbols: {SYMBOLS}")        
         # Set up price streams for all symbols
         for symbol in SYMBOLS:
             logger.info(f"Setting up price stream for {symbol}")

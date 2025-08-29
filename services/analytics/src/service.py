@@ -39,6 +39,15 @@ kafka_messages_consumed_total = Counter(
 
 ANALYTICS_ERRORS = Counter("analytics_errors_total", "Total analytics errors")
 
+def normalize_ts(ts):
+        dt = pd.to_datetime(ts, errors='coerce')
+        if dt is not pd.NaT:
+            if dt.tzinfo is None or dt.tzinfo.utcoffset(dt) is None:
+                return dt.tz_localize("UTC")
+            else:
+                return dt.tz_convert("UTC")
+        return dt
+
 async def process_ohlcv_bar(producer, event):
     """Process an OHLCV bar event and calculate analytics"""
     symbol = event["symbol"]
@@ -73,7 +82,7 @@ async def process_ohlcv_bar(producer, event):
     else:
         df = pd.concat([price_history[symbol][interval], new_row], ignore_index=True)
     
-    df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
+    df['timestamp'] = df['timestamp'].apply(normalize_ts)
     df = df.sort_values(by='timestamp').reset_index(drop=True)
     
     # Trim to keep only recent history

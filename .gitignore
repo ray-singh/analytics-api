@@ -13,6 +13,9 @@ venv.bak/
 .env.test.local
 .env.production.local
 
+# Kubernetes
+k8s/
+
 # IDE
 .vscode/
 .idea/

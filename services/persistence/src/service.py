@@ -85,7 +85,7 @@ async def consume_ohlcv_bars():
                     if bar["interval_minutes"] < 1440:  # Less than a day
                         await ohlcv_repo.insert_intraday_ohlcv(
                             symbol=bar["symbol"],
-                            timestamp=bar["bar_end_ts"],
+                            timestamp=bar["timestamp"],
                             open_price=bar["open"],
                             high=bar["high"],
                             low=bar["low"],
@@ -98,7 +98,7 @@ async def consume_ohlcv_bars():
                     else:  # Daily data
                         await ohlcv_repo.insert_historical_daily(
                             symbol=bar["symbol"],
-                            timestamp=bar["bar_end_ts"],
+                            timestamp=bar["timestamp"],
                             open_price=bar["open"],
                             high=bar["high"],
                             low=bar["low"],

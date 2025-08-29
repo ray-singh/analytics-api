@@ -2,6 +2,7 @@ import os
 import logging
 import asyncpg
 from datetime import datetime, timezone
+import dateutil.parser
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +24,10 @@ class RealTimeAnalyticsRepository:
         """Insert real-time analytics data into the database"""
         pool = await self.get_pool()
         async with pool.acquire() as conn:
+            # Convert timestamp string to datetime if needed
+            if isinstance(timestamp, str):
+                timestamp = dateutil.parser.isoparse(timestamp)
+
             # Build dynamic query based on available indicators
             columns = ["symbol", "timestamp", "price"]
             values = [symbol, timestamp, price]

@@ -138,8 +138,10 @@ class OHLCVRepository:
         """
         pool = await self.get_pool()
         
-        # Convert timestamp to date if it's a unix timestamp
-        if isinstance(timestamp, (int, float)):
+        # Convert timestamp to date if it's a string, unix timestamp, or datetime
+        if isinstance(timestamp, str):
+            timestamp = datetime.fromisoformat(timestamp).date()
+        elif isinstance(timestamp, (int, float)):
             timestamp = datetime.fromtimestamp(timestamp, tz=timezone.utc).date()
         elif isinstance(timestamp, datetime):
             timestamp = timestamp.date()

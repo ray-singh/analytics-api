@@ -143,39 +143,50 @@ def create_intraday_analytics_table(conn):
     cur = conn.cursor()
     try:
         cur.execute("""
-        CREATE TABLE IF NOT EXISTS intraday_analytics (
-            id SERIAL PRIMARY KEY,
-            symbol VARCHAR(20) NOT NULL,
-            timestamp TIMESTAMPTZ NOT NULL,
-            interval_minutes INTEGER NOT NULL,
-            price NUMERIC(18, 6) NOT NULL,
-            
-            -- Moving Averages
-            sma_20 NUMERIC(18, 6),
-            sma_50 NUMERIC(18, 6),
-            sma_200 NUMERIC(18, 6),
-            ema_12 NUMERIC(18, 6),
-            ema_26 NUMERIC(18, 6),
-            
-            -- Momentum Indicators
-            rsi_14 NUMERIC(10, 6),
-            macd NUMERIC(18, 6),
-            macd_signal NUMERIC(18, 6),
-            macd_hist NUMERIC(18, 6),
-            
-            -- Volatility Indicators
-            bb_upper NUMERIC(18, 6),
-            bb_middle NUMERIC(18, 6),
-            bb_lower NUMERIC(18, 6),
-            atr_14 NUMERIC(18, 6),
-            
-            -- Volume Indicators
-            obv BIGINT,
-            
-            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-            -- Composite unique constraint to prevent duplicates
-            CONSTRAINT unique_intraday_analytics UNIQUE (symbol, timestamp, interval_minutes)
-        );
+            CREATE TABLE IF NOT EXISTS intraday_analytics (
+                id SERIAL,  
+                symbol VARCHAR(20) NOT NULL,
+                timestamp TIMESTAMPTZ NOT NULL,
+                interval_minutes INTEGER NOT NULL,
+                price NUMERIC(19,4) NOT NULL,
+                
+                -- Trend indicators
+                sma_20 NUMERIC(19,4),
+                sma_50 NUMERIC(19,4),
+                sma_200 NUMERIC(19,4),
+                ema_12 NUMERIC(19,4),
+                ema_26 NUMERIC(19,4),
+                
+                -- Momentum indicators
+                rsi_14 NUMERIC(19,4),
+                macd NUMERIC(19,4),
+                macd_signal NUMERIC(19,4),
+                macd_hist NUMERIC(19,4),
+                stoch_k NUMERIC(19,4),
+                stoch_d NUMERIC(19,4),
+                roc_10 NUMERIC(19,4),
+                momentum_10 NUMERIC(19,4),
+                willr_14 NUMERIC(19,4),
+
+                -- Volatility indicators
+                bb_upper NUMERIC(19,4),
+                bb_middle NUMERIC(19,4),
+                bb_lower NUMERIC(19,4),
+                bb_bandwidth NUMERIC(19,4),
+                bb_percent_b NUMERIC(19,4),
+                atr_14 NUMERIC(19,4),
+                atr_percent_14 NUMERIC(19,4),
+                stdev_20 NUMERIC(19,4),
+                keltner_upper NUMERIC(19,4),
+                keltner_lower NUMERIC(19,4),
+
+                -- Volume indicator
+                hist_vol_20 NUMERIC(19,4),
+
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                PRIMARY KEY (id, timestamp),  
+                CONSTRAINT unique_intraday_analytics UNIQUE (symbol, timestamp, interval_minutes)
+            );
         
         -- Create index for querying specific symbols and intervals
         CREATE INDEX IF NOT EXISTS idx_intraday_analytics_symbol_interval_timestamp 

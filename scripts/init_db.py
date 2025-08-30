@@ -157,6 +157,7 @@ def init_database(db_url, drop_existing=False):
                 -- Trend indicators
                 sma_20 NUMERIC(19,4),
                 sma_50 NUMERIC(19,4),
+                sma_200 NUMERIC(19,4),
                 ema_12 NUMERIC(19,4),
                 ema_26 NUMERIC(19,4),
                 
@@ -165,16 +166,27 @@ def init_database(db_url, drop_existing=False):
                 macd NUMERIC(19,4),
                 macd_signal NUMERIC(19,4),
                 macd_hist NUMERIC(19,4),
-                
+                stoch_k NUMERIC(19,4),
+                stoch_d NUMERIC(19,4),
+                roc_10 NUMERIC(19,4),
+                momentum_10 NUMERIC(19,4),
+                willr_14 NUMERIC(19,4),
+
                 -- Volatility indicators
                 bb_upper NUMERIC(19,4),
                 bb_middle NUMERIC(19,4),
                 bb_lower NUMERIC(19,4),
+                bb_bandwidth NUMERIC(19,4),
+                bb_percent_b NUMERIC(19,4),
                 atr_14 NUMERIC(19,4),
-                
-                -- Volume indicators
-                obv NUMERIC(19,4),
-                
+                atr_percent_14 NUMERIC(19,4),
+                stdev_20 NUMERIC(19,4),
+                keltner_upper NUMERIC(19,4),
+                keltner_lower NUMERIC(19,4),
+
+                -- Volume indicator
+                hist_vol_20 NUMERIC(19,4),
+
                 created_at TIMESTAMPTZ DEFAULT NOW(),
                 PRIMARY KEY (id, timestamp),  
                 CONSTRAINT unique_intraday_analytics UNIQUE (symbol, timestamp, interval_minutes)
@@ -207,15 +219,26 @@ def init_database(db_url, drop_existing=False):
                 macd NUMERIC(19,4),
                 macd_signal NUMERIC(19,4),
                 macd_hist NUMERIC(19,4),
-                
+                stoch_k NUMERIC(19,4),
+                stoch_d NUMERIC(19,4),
+                roc_10 NUMERIC(19,4),
+                momentum_10 NUMERIC(19,4),
+                willr_14 NUMERIC(19,4),
+
                 -- Volatility indicators
                 bb_upper NUMERIC(19,4),
                 bb_middle NUMERIC(19,4),
                 bb_lower NUMERIC(19,4),
+                bb_bandwidth NUMERIC(19,4),
+                bb_percent_b NUMERIC(19,4),
                 atr_14 NUMERIC(19,4),
-                
-                -- Volume indicators
-                obv NUMERIC(19,4),
+                atr_percent_14 NUMERIC(19,4),
+                stdev_20 NUMERIC(19,4),
+                keltner_upper NUMERIC(19,4),
+                keltner_lower NUMERIC(19,4),
+
+                -- Volume indicator
+                hist_vol_20 NUMERIC(19,4),
                 
                 created_at TIMESTAMPTZ DEFAULT NOW(),
                 PRIMARY KEY (id, timestamp),

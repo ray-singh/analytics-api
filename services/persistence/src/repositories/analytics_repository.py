@@ -32,31 +32,49 @@ class AnalyticsRepository:
             # Create intraday analytics table
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS intraday_analytics (
-                    symbol TEXT NOT NULL,
-                    timestamp TIMESTAMPTZ NOT NULL,
-                    interval_minutes INTEGER NOT NULL,
-                    price NUMERIC(12, 4) NOT NULL,
-                    
-                    -- Common technical indicators
-                    sma_20 NUMERIC(12, 4),
-                    sma_50 NUMERIC(12, 4),
-                    sma_200 NUMERIC(12, 4),
-                    ema_12 NUMERIC(12, 4),
-                    ema_26 NUMERIC(12, 4),
-                    rsi_14 NUMERIC(12, 4),
-                    macd NUMERIC(12, 4),
-                    macd_signal NUMERIC(12, 4),
-                    macd_hist NUMERIC(12, 4),
-                    bb_upper NUMERIC(12, 4),
-                    bb_middle NUMERIC(12, 4),
-                    bb_lower NUMERIC(12, 4),
-                    
-                    -- Raw indicator data in JSONB for flexibility
-                    indicators JSONB,
-                    
-                    inserted_at TIMESTAMPTZ DEFAULT NOW(),
-                    PRIMARY KEY (symbol, timestamp, interval_minutes)
-                )
+                id SERIAL,  
+                symbol VARCHAR(20) NOT NULL,
+                timestamp TIMESTAMPTZ NOT NULL,
+                interval_minutes INTEGER NOT NULL,
+                price NUMERIC(19,4) NOT NULL,
+                
+                -- Trend indicators
+                sma_20 NUMERIC(19,4),
+                sma_50 NUMERIC(19,4),
+                sma_200 NUMERIC(19,4),
+                ema_12 NUMERIC(19,4),
+                ema_26 NUMERIC(19,4),
+                
+                -- Momentum indicators
+                rsi_14 NUMERIC(19,4),
+                macd NUMERIC(19,4),
+                macd_signal NUMERIC(19,4),
+                macd_hist NUMERIC(19,4),
+                stoch_k NUMERIC(19,4),
+                stoch_d NUMERIC(19,4),
+                roc_10 NUMERIC(19,4),
+                momentum_10 NUMERIC(19,4),
+                willr_14 NUMERIC(19,4),
+
+                -- Volatility indicators
+                bb_upper NUMERIC(19,4),
+                bb_middle NUMERIC(19,4),
+                bb_lower NUMERIC(19,4),
+                bb_bandwidth NUMERIC(19,4),
+                bb_percent_b NUMERIC(19,4),
+                atr_14 NUMERIC(19,4),
+                atr_percent_14 NUMERIC(19,4),
+                stdev_20 NUMERIC(19,4),
+                keltner_upper NUMERIC(19,4),
+                keltner_lower NUMERIC(19,4),
+
+                -- Volume indicator
+                hist_vol_20 NUMERIC(19,4),
+
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                PRIMARY KEY (id, timestamp),  
+                CONSTRAINT unique_intraday_analytics UNIQUE (symbol, timestamp, interval_minutes)
+            );
             """)
             
             # Add indexes
@@ -92,30 +110,48 @@ class AnalyticsRepository:
             # Create daily analytics table
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS daily_analytics (
-                    symbol TEXT NOT NULL,
-                    timestamp DATE NOT NULL,
-                    price NUMERIC(12, 4) NOT NULL,
-                    
-                    -- Common technical indicators
-                    sma_20 NUMERIC(12, 4),
-                    sma_50 NUMERIC(12, 4),
-                    sma_200 NUMERIC(12, 4),
-                    ema_12 NUMERIC(12, 4),
-                    ema_26 NUMERIC(12, 4),
-                    rsi_14 NUMERIC(12, 4),
-                    macd NUMERIC(12, 4),
-                    macd_signal NUMERIC(12, 4),
-                    macd_hist NUMERIC(12, 4),
-                    bb_upper NUMERIC(12, 4),
-                    bb_middle NUMERIC(12, 4),
-                    bb_lower NUMERIC(12, 4),
-                    
-                    -- Raw indicator data in JSONB for flexibility
-                    indicators JSONB,
-                    
-                    inserted_at TIMESTAMPTZ DEFAULT NOW(),
-                    PRIMARY KEY (symbol, timestamp)
-                )
+                id SERIAL,
+                symbol VARCHAR(20) NOT NULL,
+                timestamp TIMESTAMPTZ NOT NULL,
+                price NUMERIC(19,4) NOT NULL,
+                
+                -- Trend indicators
+                sma_20 NUMERIC(19,4),
+                sma_50 NUMERIC(19,4),
+                sma_200 NUMERIC(19,4),
+                ema_12 NUMERIC(19,4),
+                ema_26 NUMERIC(19,4),
+                
+                -- Momentum indicators
+                rsi_14 NUMERIC(19,4),
+                macd NUMERIC(19,4),
+                macd_signal NUMERIC(19,4),
+                macd_hist NUMERIC(19,4),
+                stoch_k NUMERIC(19,4),
+                stoch_d NUMERIC(19,4),
+                roc_10 NUMERIC(19,4),
+                momentum_10 NUMERIC(19,4),
+                willr_14 NUMERIC(19,4),
+
+                -- Volatility indicators
+                bb_upper NUMERIC(19,4),
+                bb_middle NUMERIC(19,4),
+                bb_lower NUMERIC(19,4),
+                bb_bandwidth NUMERIC(19,4),
+                bb_percent_b NUMERIC(19,4),
+                atr_14 NUMERIC(19,4),
+                atr_percent_14 NUMERIC(19,4),
+                stdev_20 NUMERIC(19,4),
+                keltner_upper NUMERIC(19,4),
+                keltner_lower NUMERIC(19,4),
+
+                -- Volume indicator
+                hist_vol_20 NUMERIC(19,4),
+                
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                PRIMARY KEY (id, timestamp),
+                CONSTRAINT unique_daily_analytics UNIQUE (symbol, timestamp)  
+                );
             """)
             
             # Add indexes
@@ -126,24 +162,36 @@ class AnalyticsRepository:
         """Insert intraday technical analysis data"""
         pool = await self.get_pool()
         
-        # Convert timestamp to datetime if it's a unix timestamp
         if isinstance(timestamp, (int, float)):
             timestamp = datetime.fromtimestamp(timestamp, tz=timezone.utc)
             
-        # Extract common indicators
-        sma_20 = indicators.get('sma_20')
-        sma_50 = indicators.get('sma_50')
-        sma_200 = indicators.get('sma_200')
-        ema_12 = indicators.get('ema_12')
-        ema_26 = indicators.get('ema_26')
-        rsi_14 = indicators.get('rsi_14')
-        macd = indicators.get('macd')
-        macd_signal = indicators.get('macd_signal')
-        macd_hist = indicators.get('macd_hist')
-        bb_upper = indicators.get('bb_upper')
-        bb_middle = indicators.get('bb_middle')
-        bb_lower = indicators.get('bb_lower')
-        
+        # Extract indicators
+        sma_20 = indicators.get('sma_20', 0)
+        sma_50 = indicators.get('sma_50', 0)
+        sma_200 = indicators.get('sma_200', 0)
+        ema_12 = indicators.get('ema_12', 0)
+        ema_26 = indicators.get('ema_26', 0)
+        rsi_14 = indicators.get('rsi_14', 0)
+        macd = indicators.get('macd', 0)
+        macd_signal = indicators.get('macd_signal', 0)
+        macd_hist = indicators.get('macd_hist', 0)
+        stoch_k = indicators.get('stoch_k', 0)
+        stoch_d = indicators.get('stoch_d', 0)
+        roc_10 = indicators.get('roc_10', 0)
+        momentum_10 = indicators.get('momentum_10', 0)
+        willr_14 = indicators.get('willr_14', 0)
+        bb_upper = indicators.get('bb_upper', 0)
+        bb_middle = indicators.get('bb_middle', 0)
+        bb_lower = indicators.get('bb_lower', 0)
+        bb_bandwidth = indicators.get('bb_bandwidth', 0)
+        bb_percent_b = indicators.get('bb_percent_b', 0)
+        atr_14 = indicators.get('atr_14', 0)
+        atr_percent_14 = indicators.get('atr_percent_14', 0)
+        stdev_20 = indicators.get('stdev_20', 0)
+        keltner_upper = indicators.get('keltner_upper', 0)
+        keltner_lower = indicators.get('keltner_lower', 0)
+        hist_vol_20 = indicators.get('hist_vol_20', 0)
+
         async with pool.acquire() as conn:
             await conn.execute(
                 """
@@ -151,9 +199,12 @@ class AnalyticsRepository:
                     (symbol, timestamp, interval_minutes, price, 
                      sma_20, sma_50, sma_200, ema_12, ema_26, 
                      rsi_14, macd, macd_signal, macd_hist,
-                     bb_upper, bb_middle, bb_lower, indicators)
+                     stoch_k, stoch_d, roc_10, momentum_10, willr_14,
+                     bb_upper, bb_middle, bb_lower, bb_bandwidth, bb_percent_b,
+                     atr_14, atr_percent_14, stdev_20, keltner_upper, keltner_lower,
+                     hist_vol_20)
                 VALUES
-                    ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
+                    ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28)
                 ON CONFLICT (symbol, timestamp, interval_minutes) DO UPDATE
                 SET
                     price = EXCLUDED.price,
@@ -166,15 +217,30 @@ class AnalyticsRepository:
                     macd = EXCLUDED.macd,
                     macd_signal = EXCLUDED.macd_signal,
                     macd_hist = EXCLUDED.macd_hist,
+                    stoch_k = EXCLUDED.stoch_k,
+                    stoch_d = EXCLUDED.stoch_d,
+                    roc_10 = EXCLUDED.roc_10,
+                    momentum_10 = EXCLUDED.momentum_10,
+                    willr_14 = EXCLUDED.willr_14,
                     bb_upper = EXCLUDED.bb_upper,
                     bb_middle = EXCLUDED.bb_middle,
                     bb_lower = EXCLUDED.bb_lower,
-                    indicators = EXCLUDED.indicators
+                    bb_bandwidth = EXCLUDED.bb_bandwidth,
+                    bb_percent_b = EXCLUDED.bb_percent_b,
+                    atr_14 = EXCLUDED.atr_14,
+                    atr_percent_14 = EXCLUDED.atr_percent_14,
+                    stdev_20 = EXCLUDED.stdev_20,
+                    keltner_upper = EXCLUDED.keltner_upper,
+                    keltner_lower = EXCLUDED.keltner_lower,
+                    hist_vol_20 = EXCLUDED.hist_vol_20
                 """,
                 symbol, timestamp, interval_minutes, price,
                 sma_20, sma_50, sma_200, ema_12, ema_26,
                 rsi_14, macd, macd_signal, macd_hist,
-                bb_upper, bb_middle, bb_lower, json.dumps(indicators)
+                stoch_k, stoch_d, roc_10, momentum_10, willr_14,
+                bb_upper, bb_middle, bb_lower, bb_bandwidth, bb_percent_b,
+                atr_14, atr_percent_14, stdev_20, keltner_upper, keltner_lower,
+                hist_vol_20
             )
             logger.debug(f"Inserted/updated intraday analytics for {symbol} at {timestamp} [{interval_minutes}min]")
 
@@ -188,20 +254,33 @@ class AnalyticsRepository:
         elif isinstance(timestamp, datetime):
             timestamp = timestamp.date()
             
-        # Extract common indicators
-        sma_20 = indicators.get('sma_20')
-        sma_50 = indicators.get('sma_50')
-        sma_200 = indicators.get('sma_200')
-        ema_12 = indicators.get('ema_12')
-        ema_26 = indicators.get('ema_26')
-        rsi_14 = indicators.get('rsi_14')
-        macd = indicators.get('macd')
-        macd_signal = indicators.get('macd_signal')
-        macd_hist = indicators.get('macd_hist')
-        bb_upper = indicators.get('bb_upper')
-        bb_middle = indicators.get('bb_middle')
-        bb_lower = indicators.get('bb_lower')
-        
+        # Extract indicators
+        sma_20 = indicators.get('sma_20', 0)
+        sma_50 = indicators.get('sma_50', 0)
+        sma_200 = indicators.get('sma_200', 0)
+        ema_12 = indicators.get('ema_12', 0)
+        ema_26 = indicators.get('ema_26', 0)
+        rsi_14 = indicators.get('rsi_14', 0)
+        macd = indicators.get('macd', 0)
+        macd_signal = indicators.get('macd_signal', 0)
+        macd_hist = indicators.get('macd_hist', 0)
+        stoch_k = indicators.get('stoch_k', 0)
+        stoch_d = indicators.get('stoch_d', 0)
+        roc_10 = indicators.get('roc_10', 0)
+        momentum_10 = indicators.get('momentum_10', 0)
+        willr_14 = indicators.get('willr_14', 0)
+        bb_upper = indicators.get('bb_upper', 0)
+        bb_middle = indicators.get('bb_middle', 0)
+        bb_lower = indicators.get('bb_lower', 0)
+        bb_bandwidth = indicators.get('bb_bandwidth', 0)
+        bb_percent_b = indicators.get('bb_percent_b', 0)
+        atr_14 = indicators.get('atr_14', 0)
+        atr_percent_14 = indicators.get('atr_percent_14', 0)
+        stdev_20 = indicators.get('stdev_20', 0)
+        keltner_upper = indicators.get('keltner_upper', 0)
+        keltner_lower = indicators.get('keltner_lower', 0)
+        hist_vol_20 = indicators.get('hist_vol_20', 0)
+
         async with pool.acquire() as conn:
             await conn.execute(
                 """
@@ -209,9 +288,12 @@ class AnalyticsRepository:
                     (symbol, timestamp, price, 
                      sma_20, sma_50, sma_200, ema_12, ema_26, 
                      rsi_14, macd, macd_signal, macd_hist,
-                     bb_upper, bb_middle, bb_lower, indicators)
+                     stoch_k, stoch_d, roc_10, momentum_10, willr_14,
+                     bb_upper, bb_middle, bb_lower, bb_bandwidth, bb_percent_b,
+                     atr_14, atr_percent_14, stdev_20, keltner_upper, keltner_lower,
+                     hist_vol_20)
                 VALUES
-                    ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+                    ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27)
                 ON CONFLICT (symbol, timestamp) DO UPDATE
                 SET
                     price = EXCLUDED.price,
@@ -224,15 +306,30 @@ class AnalyticsRepository:
                     macd = EXCLUDED.macd,
                     macd_signal = EXCLUDED.macd_signal,
                     macd_hist = EXCLUDED.macd_hist,
+                    stoch_k = EXCLUDED.stoch_k,
+                    stoch_d = EXCLUDED.stoch_d,
+                    roc_10 = EXCLUDED.roc_10,
+                    momentum_10 = EXCLUDED.momentum_10,
+                    willr_14 = EXCLUDED.willr_14,
                     bb_upper = EXCLUDED.bb_upper,
                     bb_middle = EXCLUDED.bb_middle,
                     bb_lower = EXCLUDED.bb_lower,
-                    indicators = EXCLUDED.indicators
+                    bb_bandwidth = EXCLUDED.bb_bandwidth,
+                    bb_percent_b = EXCLUDED.bb_percent_b,
+                    atr_14 = EXCLUDED.atr_14,
+                    atr_percent_14 = EXCLUDED.atr_percent_14,
+                    stdev_20 = EXCLUDED.stdev_20,
+                    keltner_upper = EXCLUDED.keltner_upper,
+                    keltner_lower = EXCLUDED.keltner_lower,
+                    hist_vol_20 = EXCLUDED.hist_vol_20
                 """,
                 symbol, timestamp, price,
                 sma_20, sma_50, sma_200, ema_12, ema_26,
                 rsi_14, macd, macd_signal, macd_hist,
-                bb_upper, bb_middle, bb_lower, json.dumps(indicators)
+                stoch_k, stoch_d, roc_10, momentum_10, willr_14,
+                bb_upper, bb_middle, bb_lower, bb_bandwidth, bb_percent_b,
+                atr_14, atr_percent_14, stdev_20, keltner_upper, keltner_lower,
+                hist_vol_20
             )
             logger.debug(f"Inserted/updated daily analytics for {symbol} on {timestamp}")
 

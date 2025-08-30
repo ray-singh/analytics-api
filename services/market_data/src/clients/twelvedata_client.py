@@ -151,8 +151,6 @@ class TwelveDataClient:
             chunk_end_str = current_end.strftime("%Y-%m-%d")
             
             logger.info(f"Fetching chunk {chunk+1}/{num_chunks}: {chunk_start_str} to {chunk_end_str}")
-            
-            # Fetch this chunk
             chunk_data = await self.fetch_time_series(
                 symbol=symbol,
                 interval=interval,
@@ -161,12 +159,10 @@ class TwelveDataClient:
                 end_date=chunk_end_str
             )
             
-            # Add values to our collection
             if "values" in chunk_data:
                 all_values.extend(chunk_data["values"])
                 logger.info(f"Added {len(chunk_data['values'])} records from chunk {chunk+1}")
             
-            # Move to next chunk
             current_start = current_end + timedelta(days=1)
             
             # Respect rate limit between chunks

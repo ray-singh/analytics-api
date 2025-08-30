@@ -126,7 +126,8 @@ async def get_realtime_prices(
 
 @router.get("/prices/{symbol}/latest", summary="Get latest real-time price")
 async def get_latest_realtime_price(
-    symbol: str = Path(..., description="Stock symbol (e.g., AAPL, MSFT)")
+    symbol: str = Path(..., description="Stock symbol (e.g., AAPL, MSFT)"),
+    format: str = Query("json", description="Response format: json or csv")
 ):
     """Get the most recent real-time price for a symbol."""
     conn = get_db_connection()
@@ -155,12 +156,18 @@ async def get_latest_realtime_price(
             result['timestamp_utc'] = result['timestamp'].isoformat()
             result['timestamp_est'] = format_est_datetime(result['timestamp'])
             
-            return {
+            metadata = {
                 "symbol": symbol,
                 "data": result,
                 "timezone_note": "timestamp_est is in America/New_York timezone (EST/EDT)"
             }
-            
+            return create_formatted_response(
+                result,
+                format,
+                metadata,
+                f"realtime_prices_{symbol}"
+            )
+
     except HTTPException:
         raise
     except Exception as e:
@@ -182,53 +189,38 @@ async def get_realtime_analytics(
 ):
     """
     Get real-time technical analytics for a symbol.
-    
-    Real-time analytics include tick-based indicators like:
-    - Price velocity
-    - Tick momentum 
-    - Real-time RSI approximation
-    - Volume profile indicators
-    
-    If no indicators are specified, returns all available real-time indicators.
-    All date/time inputs are interpreted as EST timezone.
     """
-    # Get all available real-time indicators if none specified
     realtime_indicators = [
         "price_velocity_10", "price_velocity_50", "tick_ratio", "tick_vwap_20",
         "volume_momentum", "bb_bandwidth", "bb_position", "tick_rsi_14", "price"
     ]
-    
+
+    # Validate indicators
     if not indicators:
         indicators = realtime_indicators
     else:
-        # Validate indicators
         invalid_indicators = [ind for ind in indicators if ind not in realtime_indicators]
         if invalid_indicators:
             raise HTTPException(
                 status_code=400, 
                 detail=f"Invalid real-time indicators: {invalid_indicators}. Available indicators: {realtime_indicators}"
             )
-    
+
     # Always include price
     if "price" not in indicators:
         indicators.append("price")
-    
+
+    columns = ", ".join(["symbol", "timestamp"] + indicators)
+
     conn = get_db_connection()
-    
     try:
-        # Build the query - for real-time analytics, we need to extract from JSONB
-        indicator_columns = ", ".join([f"indicators->>'{ind}' as {ind}" for ind in indicators if ind != "price"])
-        columns = f"symbol, timestamp, price"
-        if indicator_columns:
-            columns += f", {indicator_columns}"
-        
         query = f"""
         SELECT {columns}
         FROM realtime_analytics
         WHERE symbol = %s
         """
         params = [symbol]
-        
+
         # Add time filters
         if date:
             if start_time or end_time:
@@ -237,21 +229,20 @@ async def get_realtime_analytics(
                 )
             else:
                 start_dt, end_dt = parse_est_date_range(date, date)
-            
             query += " AND timestamp >= %s AND timestamp <= %s"
             params.extend([start_dt, end_dt])
         else:
             # Default to last N minutes
             query += " AND timestamp > NOW() - interval '%s minutes'"
             params.append(last_minutes)
-        
+
         query += " ORDER BY timestamp DESC LIMIT %s"
         params.append(limit)
-        
+
         with conn.cursor() as cur:
             cur.execute(query, params)
             rows = cur.fetchall()
-            
+
             if not rows:
                 metadata = {
                     "symbol": symbol,
@@ -260,29 +251,28 @@ async def get_realtime_analytics(
                     "message": f"No real-time analytics found for {symbol}"
                 }
                 return create_formatted_response([], format, metadata, f"realtime_analytics_{symbol}")
-            
-            # Format the response
+
             result = []
             for row in rows:
                 row_dict = dict(row)
                 row_dict['timestamp_utc'] = row_dict['timestamp'].isoformat()
                 row_dict['timestamp_est'] = format_est_datetime(row_dict['timestamp'])
                 result.append(row_dict)
-            
+
             metadata = {
                 "symbol": symbol,
                 "indicators": indicators,
                 "count": len(result),
                 "timezone_note": "timestamp_est is in America/New_York timezone (EST/EDT)"
             }
-            
+
             return create_formatted_response(
-                result, 
-                format, 
-                metadata, 
+                result,
+                format,
+                metadata,
                 f"realtime_analytics_{symbol}"
             )
-            
+
     except Exception as e:
         logger.error(f"Error fetching realtime analytics: {e}")
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")

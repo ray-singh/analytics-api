@@ -1,11 +1,12 @@
 from fastapi import APIRouter, Path, Query, HTTPException
 from typing import List, Optional
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 import psycopg2
 import psycopg2.extras
 import os
 import logging
 from .utils.timezone_utils import parse_est_datetime, parse_est_date_range, format_est_datetime
+from .utils.format_utils import create_formatted_response
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -23,7 +24,8 @@ async def get_historical_prices(
     limit: int = Query(252, description="Number of data points to return (252 = 1 year)", ge=1, le=5000),
     start_date: Optional[str] = Query(None, description="Start date (YYYY-MM-DD) in EST timezone"),
     end_date: Optional[str] = Query(None, description="End date (YYYY-MM-DD) in EST timezone"),
-    last_days: Optional[int] = Query(None, description="Get data from last N trading days", ge=1, le=2000)
+    last_days: Optional[int] = Query(None, description="Get data from last N trading days", ge=1, le=2000),
+    format: str = Query("json", description="Response format: json or csv")
 ):
     """
     Get historical daily OHLCV data for a specific symbol.
@@ -85,16 +87,25 @@ async def get_historical_prices(
             result = []
             for row in rows:
                 row_dict = dict(row)
-                row_dict['timestamp_utc'] = row_dict['timestamp'].isoformat()
-                row_dict['date_est'] = format_est_datetime(row_dict['timestamp']).split(' ')[0]  # Just the date part
+                ts = row_dict['timestamp']
+                if isinstance(ts, datetime):
+                    ts_dt = ts
+                elif isinstance(ts, date):
+                    ts_dt = datetime.combine(ts, datetime.min.time())
+                else:
+                    ts_dt = datetime.strptime(str(ts), "%Y-%m-%d %H:%M:%S")
+
+                row_dict['timestamp_utc'] = ts_dt.isoformat()
+                row_dict['date_est'] = format_est_datetime(ts_dt).split(' ')[0]  # Just the date part
                 result.append(row_dict)
             
-            return {
+            metadata = {
                 "symbol": symbol,
                 "count": len(result),
                 "data": result,
                 "timezone_note": "Historical daily data represents end-of-day prices in America/New_York timezone"
             }
+            return create_formatted_response(result, format, metadata, f"historical_prices_{symbol}")
             
     except Exception as e:
         logger.error(f"Error fetching historical prices: {e}")
@@ -104,7 +115,8 @@ async def get_historical_prices(
 
 @router.get("/prices/{symbol}/latest", summary="Get latest historical daily bar")
 async def get_latest_historical_price(
-    symbol: str = Path(..., description="Stock symbol (e.g., AAPL, MSFT)")
+    symbol: str = Path(..., description="Stock symbol (e.g., AAPL, MSFT)"),
+    format: str = Query("json", description="Response format: json or csv")
 ):
     """Get the most recent historical daily OHLCV bar for a symbol."""
     conn = get_db_connection()
@@ -130,15 +142,24 @@ async def get_latest_historical_price(
                 )
             
             result = dict(row)
-            result['timestamp_utc'] = result['timestamp'].isoformat()
-            result['date_est'] = format_est_datetime(result['timestamp']).split(' ')[0]
+            ts = result['timestamp']
+            if isinstance(ts, datetime):
+                ts_dt = ts
+            elif isinstance(ts, date):
+                ts_dt = datetime.combine(ts, datetime.min.time())
+            else:
+                ts_dt = datetime.strptime(str(ts), "%Y-%m-%d %H:%M:%S")
+
+            result['timestamp_utc'] = ts_dt.isoformat()
+            result['date_est'] = format_est_datetime(ts_dt).split(' ')[0]
             
-            return {
+            metadata = {
                 "symbol": symbol,
                 "data": result,
                 "timezone_note": "Historical daily data represents end-of-day prices in America/New_York timezone"
             }
-            
+            return create_formatted_response(result, format, metadata, f"historical_prices_{symbol}")
+
     except HTTPException:
         raise
     except Exception as e:
@@ -150,7 +171,8 @@ async def get_latest_historical_price(
 @router.get("/prices/{symbol}/last/{count}", summary="Get last N historical daily bars")
 async def get_last_historical_bars(
     symbol: str = Path(..., description="Stock symbol (e.g., AAPL, MSFT)"),
-    count: int = Path(..., description="Number of latest trading days to return", ge=1, le=2000)
+    count: int = Path(..., description="Number of latest trading days to return", ge=1, le=2000),
+    format: str = Query("json", description="Response format: json or csv")
 ):
     """Get the last N historical daily OHLCV bars for a symbol."""
     conn = get_db_connection()
@@ -178,17 +200,26 @@ async def get_last_historical_bars(
             result = []
             for row in rows:
                 row_dict = dict(row)
-                row_dict['timestamp_utc'] = row_dict['timestamp'].isoformat()
-                row_dict['date_est'] = format_est_datetime(row_dict['timestamp']).split(' ')[0]
+                ts = row_dict['timestamp']
+                if isinstance(ts, datetime):
+                    ts_dt = ts
+                elif isinstance(ts, date):
+                    ts_dt = datetime.combine(ts, datetime.min.time())
+                else:
+                    ts_dt = datetime.strptime(str(ts), "%Y-%m-%d %H:%M:%S")
+
+                row_dict['timestamp_utc'] = ts_dt.isoformat()
+                row_dict['date_est'] = format_est_datetime(ts_dt).split(' ')[0]
                 result.append(row_dict)
-            
-            return {
+
+            metadata = {
                 "symbol": symbol,
                 "count": len(result),
                 "requested_count": count,
                 "data": result,
                 "timezone_note": "Historical daily data represents end-of-day prices in America/New_York timezone"
             }
+            return create_formatted_response(result, format, metadata, f"historical_prices_{symbol}")
             
     except HTTPException:
         raise
@@ -208,7 +239,8 @@ async def get_historical_analytics(
     limit: int = Query(252, description="Number of data points to return", ge=1, le=2000),
     start_date: Optional[str] = Query(None, description="Start date (YYYY-MM-DD) in est timezone"),
     end_date: Optional[str] = Query(None, description="End date (YYYY-MM-DD) in est timezone"),
-    last_days: Optional[int] = Query(None, description="Get data from last N trading days", ge=1, le=1000)
+    last_days: Optional[int] = Query(None, description="Get data from last N trading days", ge=1, le=1000),
+    format: str = Query("json", description="Response format: json or csv")
 ):
     """
     Get historical daily technical analytics for a symbol.
@@ -295,17 +327,26 @@ async def get_historical_analytics(
             result = []
             for row in rows:
                 row_dict = dict(row)
-                row_dict['timestamp_utc'] = row_dict['timestamp'].isoformat()
-                row_dict['date_est'] = format_est_datetime(row_dict['timestamp']).split(' ')[0]
+                ts = row_dict['timestamp']
+                if isinstance(ts, datetime):
+                    ts_dt = ts
+                elif isinstance(ts, date):
+                    ts_dt = datetime.combine(ts, datetime.min.time())
+                else:
+                    ts_dt = datetime.strptime(str(ts), "%Y-%m-%d %H:%M:%S")
+
+                row_dict['timestamp_utc'] = ts_dt.isoformat()
+                row_dict['date_est'] = format_est_datetime(ts_dt).split(' ')[0]
                 result.append(row_dict)
             
-            return {
+            metadata = {
                 "symbol": symbol,
                 "indicators": indicators,
                 "count": len(result),
                 "data": result,
                 "timezone_note": "Historical daily analytics represent end-of-day calculations in America/New_York timezone"
             }
+            return create_formatted_response(result, format, metadata, f"historical_analytics_{symbol}")
             
     except HTTPException:
         raise
@@ -322,10 +363,10 @@ async def get_last_historical_analytics(
     indicators: List[str] = Query(
         ["rsi_14", "macd", "sma_20", "sma_50"], 
         description="Technical indicators to include"
-    )
+    ),
+    format: str = Query("json", description="Response format: json or csv")
 ):
     """Get the last N historical daily analytics records for a symbol."""
-    # Validate indicators (same as above)
     allowed_indicators = [
         "rsi_7", "rsi_14", "rsi_21", "macd", "macd_signal", "macd_hist",
         "bb_upper", "bb_middle", "bb_lower", "bb_bandwidth", "bb_percent_b",
@@ -375,11 +416,19 @@ async def get_last_historical_analytics(
             result = []
             for row in rows:
                 row_dict = dict(row)
-                row_dict['timestamp_utc'] = row_dict['timestamp'].isoformat()
-                row_dict['date_est'] = format_est_datetime(row_dict['timestamp']).split(' ')[0]
+                ts = row_dict['timestamp']
+                if isinstance(ts, datetime):
+                    ts_dt = ts
+                elif isinstance(ts, date):
+                    ts_dt = datetime.combine(ts, datetime.min.time())
+                else:
+                    ts_dt = datetime.strptime(str(ts), "%Y-%m-%d %H:%M:%S")
+
+                row_dict['timestamp_utc'] = ts_dt.isoformat()
+                row_dict['date_est'] = format_est_datetime(ts_dt).split(' ')[0]
                 result.append(row_dict)
             
-            return {
+            metadata = {
                 "symbol": symbol,
                 "indicators": indicators,
                 "count": len(result),
@@ -387,6 +436,7 @@ async def get_last_historical_analytics(
                 "data": result,
                 "timezone_note": "Historical daily analytics represent end-of-day calculations in America/New_York timezone"
             }
+            return create_formatted_response(result, format, metadata, f"historical_analytics_{symbol}")
             
     except HTTPException:
         raise

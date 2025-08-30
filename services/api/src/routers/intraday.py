@@ -6,6 +6,7 @@ import psycopg2.extras
 import os
 import logging
 from .utils.timezone_utils import parse_est_datetime, parse_est_date_range, format_est_datetime
+from .utils.format_utils import create_formatted_response
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -38,7 +39,8 @@ async def get_intraday_prices(
     end_time: Optional[str] = Query(None, description="End time (HH:MM:SS or HH:MM) in est timezone"),
     start_date: Optional[str] = Query(None, description="Start date (YYYY-MM-DD) in est timezone"),
     end_date: Optional[str] = Query(None, description="End date (YYYY-MM-DD) in est timezone"),
-    last_hours: Optional[int] = Query(None, description="Get data from last N hours", ge=1, le=168)  # Max 1 week
+    last_hours: Optional[int] = Query(None, description="Get data from last N hours", ge=1, le=168),  # Max 1 week
+    format: str = Query("json", description="Response format: json or csv")
 ):
     """
     Get intraday OHLCV bar data for a specific symbol and interval.
@@ -150,7 +152,8 @@ async def get_intraday_prices(
 @router.get("/prices/{symbol}/latest", summary="Get latest intraday bar")
 async def get_latest_intraday_price(
     symbol: str = Path(..., description="Stock symbol (e.g., AAPL, MSFT)"),
-    interval: str = Query("5min", description="Price interval")
+    interval: str = Query("5min", description="Price interval"),
+    format: str = Query("json", description="Response format: json or csv")
 ):
     """Get the most recent intraday OHLCV bar for a symbol and interval."""
     if interval not in INTERVAL_MAPPING:
@@ -186,13 +189,14 @@ async def get_latest_intraday_price(
             result['timestamp_utc'] = result['timestamp'].isoformat()
             result['timestamp_est'] = format_est_datetime(result['timestamp'])
             
-            return {
+            metadata = {
                 "symbol": symbol,
                 "interval": interval,
                 "data": result,
                 "timezone_note": "timestamp_est is in America/New_York timezone (EST/EDT)"
             }
-            
+            return create_formatted_response(result, format, metadata, f"latest_intraday_price_{symbol}_{interval}")
+
     except HTTPException:
         raise
     except Exception as e:
@@ -215,7 +219,8 @@ async def get_intraday_analytics(
     end_time: Optional[str] = Query(None, description="End time (HH:MM:SS) in est timezone"),
     start_date: Optional[str] = Query(None, description="Start date (YYYY-MM-DD) in est timezone"),
     end_date: Optional[str] = Query(None, description="End date (YYYY-MM-DD) in est timezone"),
-    last_hours: Optional[int] = Query(None, description="Get data from last N hours", ge=1, le=72)
+    last_hours: Optional[int] = Query(None, description="Get data from last N hours", ge=1, le=72),
+    format: str = Query("json", description="Response format: json or csv")
 ):
     """
     Get intraday technical analytics for a symbol and interval.
@@ -325,7 +330,7 @@ async def get_intraday_analytics(
                 row_dict['timestamp_est'] = format_est_datetime(row_dict['timestamp'])
                 result.append(row_dict)
             
-            return {
+            metadata = {
                 "symbol": symbol,
                 "interval": interval,
                 "indicators": indicators,
@@ -333,7 +338,8 @@ async def get_intraday_analytics(
                 "data": result,
                 "timezone_note": "timestamp_est is in America/New_York timezone (EST/EDT)"
             }
-            
+            return create_formatted_response(result, format, metadata, f"intraday_analytics_{symbol}_{interval}")
+
     except HTTPException:
         raise
     except Exception as e:
@@ -346,7 +352,8 @@ async def get_intraday_analytics(
 async def get_last_intraday_bars(
     symbol: str = Path(..., description="Stock symbol (e.g., AAPL, MSFT)"),
     count: int = Path(..., description="Number of latest bars to return", ge=1, le=1000),
-    interval: str = Query("5min", description="Price interval")
+    interval: str = Query("5min", description="Price interval"),
+    format: str = Query("json", description="Response format: json or csv")
 ):
     """Get the last N intraday OHLCV bars for a symbol."""
     if interval not in INTERVAL_MAPPING:
@@ -385,7 +392,7 @@ async def get_last_intraday_bars(
                 row_dict['timestamp_est'] = format_est_datetime(row_dict['timestamp'])
                 result.append(row_dict)
             
-            return {
+            metadata = {
                 "symbol": symbol,
                 "interval": interval,
                 "count": len(result),
@@ -393,6 +400,7 @@ async def get_last_intraday_bars(
                 "data": result,
                 "timezone_note": "timestamp_est is in America/New_York timezone (EST/EDT)"
             }
+            return create_formatted_response(result, format, metadata, f"last_intraday_bars_{symbol}_{interval}")
             
     except HTTPException:
         raise
@@ -410,7 +418,8 @@ async def get_last_intraday_analytics(
     indicators: List[str] = Query(
         ["rsi_14", "macd", "bb_upper", "bb_lower"], 
         description="Technical indicators to include"
-    )
+    ),
+    format: str = Query("json", description="Response format: json or csv")
 ):
     """Get the last N intraday analytics records for a symbol."""
     if interval not in INTERVAL_MAPPING:
@@ -475,7 +484,7 @@ async def get_last_intraday_analytics(
                 row_dict['timestamp_est'] = format_est_datetime(row_dict['timestamp'])
                 result.append(row_dict)
             
-            return {
+            metadata = {
                 "symbol": symbol,
                 "interval": interval,
                 "indicators": indicators,
@@ -484,6 +493,7 @@ async def get_last_intraday_analytics(
                 "data": result,
                 "timezone_note": "timestamp_est is in America/New_York timezone (EST/EDT)"
             }
+            return create_formatted_response(result, format, metadata, f"last_intraday_analytics_{symbol}_{interval}")
             
     except HTTPException:
         raise

@@ -136,7 +136,7 @@ class MarketDataService:
                 if not latest:
                     logger.info(f"No intraday data for {symbol}, fetching initial data")
                     need_update = True
-                    start_date = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d')
+                    start_date = (datetime.now() - timedelta(days=365)).strftime('%Y-%m-%d')
                     end_date = datetime.now().strftime('%Y-%m-%d')
                 else:
                     try:

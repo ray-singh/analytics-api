@@ -9,6 +9,7 @@ from services.persistence.src.repositories.ohlcv_repository import OHLCVReposito
 from services.persistence.src.repositories.analytics_repository import AnalyticsRepository
 from services.persistence.src.repositories.realtime_analytics_repository import RealTimeAnalyticsRepository
 from prometheus_client import start_http_server, Counter
+from dateutil import parser
 
 logging.basicConfig(
     level=logging.INFO,
@@ -20,7 +21,6 @@ load_dotenv()
 KAFKA_BOOTSTRAP = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
 DATABASE_URL = os.getenv("DATABASE_URL", "postgresql://postgres:password@localhost:5432/stockanalytics")
 
-# Initialize repositories
 price_repo = PriceRepository(DATABASE_URL)
 ohlcv_repo = OHLCVRepository(DATABASE_URL)
 analytics_repo = AnalyticsRepository(DATABASE_URL)
@@ -81,11 +81,13 @@ async def consume_ohlcv_bars():
             bar = msg.value
             try:
                 if bar["event_type"] == "price.ohlcv":
-                    # Determine if this is intraday or daily data
+                    ts = bar["timestamp"]
+                    if isinstance(ts, str):
+                        ts = parser.isoparse(ts)
                     if bar["interval_minutes"] < 1440:  # Less than a day
                         await ohlcv_repo.insert_intraday_ohlcv(
                             symbol=bar["symbol"],
-                            timestamp=bar["timestamp"],
+                            timestamp=ts,  # pass as datetime
                             open_price=bar["open"],
                             high=bar["high"],
                             low=bar["low"],
@@ -98,7 +100,7 @@ async def consume_ohlcv_bars():
                     else:  # Daily data
                         await ohlcv_repo.insert_historical_daily(
                             symbol=bar["symbol"],
-                            timestamp=bar["timestamp"],
+                            timestamp=ts,  # pass as datetime
                             open_price=bar["open"],
                             high=bar["high"],
                             low=bar["low"],

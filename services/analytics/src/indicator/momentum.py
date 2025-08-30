@@ -17,6 +17,21 @@ def calculate_momentum_indicators(df):
     
     close_prices = df['close'].values
     indicators = {}
+
+    # SMA (Simple Moving Average)
+    try:
+        indicators['sma_20'] = float(talib.SMA(close_prices, timeperiod=20)[-1])
+        indicators['sma_50'] = float(talib.SMA(close_prices, timeperiod=50)[-1])
+        indicators['sma_200'] = float(talib.SMA(close_prices, timeperiod=200)[-1])
+    except Exception as e:
+        print(f"Error calculating SMA: {e}")
+
+    # EMA (Exponential Moving Average)
+    try:
+        indicators['ema_12'] = float(talib.EMA(close_prices, timeperiod=12)[-1])
+        indicators['ema_26'] = float(talib.EMA(close_prices, timeperiod=26)[-1])
+    except Exception as e:
+        print(f"Error calculating EMA: {e}")
     
     # RSI (Relative Strength Index)
     try:

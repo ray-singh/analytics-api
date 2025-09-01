@@ -47,9 +47,6 @@ class OHLCVRepository:
                 )
             """)
             
-            # Add indexes
-            await conn.execute("CREATE INDEX IF NOT EXISTS idx_intraday_ohlcv_symbol_time ON intraday_ohlcv (symbol, timestamp)")
-            
             # Convert to hypertable if not already
             try:
                 await conn.execute("""
@@ -58,24 +55,53 @@ class OHLCVRepository:
                 """)
             except Exception as e:
                 logger.warning(f"Could not create hypertable for intraday_ohlcv: {e}")
-                
-            # Create compression policy
+        
+            # Add retention policy - keep data for 2 years
+            try:
+                await conn.execute("""
+                    SELECT add_retention_policy('intraday_ohlcv', INTERVAL '2 years', if_not_exists => TRUE)
+                """)
+            except Exception as e:
+                logger.warning(f"Could not set retention policy for intraday_ohlcv: {e}")
+        
+            # Add compression policy
             try:
                 await conn.execute("""
                     ALTER TABLE intraday_ohlcv SET (
                         timescaledb.compress,
                         timescaledb.compress_segmentby = 'symbol,interval_minutes'
-                    )
-                """)
-                
-                # Add compression policy - compress data older than 7 days
-                await conn.execute("""
-                    SELECT add_compression_policy('intraday_ohlcv', 
-                                              INTERVAL '7 days',
-                                              if_not_exists => TRUE)
+                    );
+                    SELECT add_compression_policy('intraday_ohlcv', INTERVAL '3 days', if_not_exists => TRUE)
                 """)
             except Exception as e:
-                logger.warning(f"Could not set compression policy: {e}")
+                logger.warning(f"Could not set compression policy for intraday_ohlcv: {e}")
+        
+            # Add continuous aggregate for daily OHLCV
+            try:
+                await conn.execute("""
+                    CREATE MATERIALIZED VIEW IF NOT EXISTS intraday_to_daily
+                    WITH (timescaledb.continuous) AS
+                    SELECT
+                        time_bucket('1 day', timestamp) AS bucket,
+                        symbol,
+                        FIRST(open, timestamp) AS open,
+                        MAX(high) AS high,
+                        MIN(low) AS low,
+                        LAST(close, timestamp) AS close,
+                        SUM(volume) AS volume,
+                        'aggregator' AS source
+                    FROM intraday_ohlcv
+                    WHERE interval_minutes = 5
+                    GROUP BY bucket, symbol
+                    WITH NO DATA;
+
+                    SELECT add_continuous_aggregate_policy('intraday_to_daily',
+                        start_offset => INTERVAL '3 days',
+                        end_offset => INTERVAL '6 hours',
+                        schedule_interval => INTERVAL '1 hour');
+                """)
+            except Exception as e:
+                logger.warning(f"Could not create continuous aggregate for intraday_ohlcv: {e}")
                 
             # Create daily historical OHLCV table
             await conn.execute("""

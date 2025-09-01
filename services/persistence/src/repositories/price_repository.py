@@ -50,13 +50,10 @@ class PriceRepository:
                     volume BIGINT,
                     timestamp TIMESTAMPTZ NOT NULL,
                     source TEXT,
-                    inserted_at TIMESTAMPTZ DEFAULT NOW()
+                    inserted_at TIMESTAMPTZ DEFAULT NOW(),
+                    PRIMARY KEY (symbol, timestamp)
                 )
             """)
-            
-            # Add indexes
-            await conn.execute("CREATE INDEX IF NOT EXISTS idx_realtime_prices_symbol ON realtime_prices (symbol)")
-            await conn.execute("CREATE INDEX IF NOT EXISTS idx_realtime_prices_timestamp ON realtime_prices (timestamp)")
             
             # Convert to hypertable if not already
             try:
@@ -66,35 +63,54 @@ class PriceRepository:
                 """)
             except Exception as e:
                 logger.warning(f"Could not create hypertable for realtime_prices: {e}")
-                
-            # Create compression policy (optional)
+        
+            # Add retention policy - keep data for 7 days
+            try:
+                await conn.execute("""
+                    SELECT add_retention_policy('realtime_prices', INTERVAL '7 days', if_not_exists => TRUE)
+                """)
+            except Exception as e:
+                logger.warning(f"Could not set retention policy for realtime_prices: {e}")
+        
+            # Add compression policy
             try:
                 await conn.execute("""
                     ALTER TABLE realtime_prices SET (
                         timescaledb.compress,
                         timescaledb.compress_segmentby = 'symbol'
-                    )
-                """)
-                
-                # Add compression policy - compress data older than 1 day
-                await conn.execute("""
-                    SELECT add_compression_policy('realtime_prices', 
-                                              INTERVAL '1 day',
-                                              if_not_exists => TRUE)
+                    );
+                    SELECT add_compression_policy('realtime_prices', INTERVAL '1 day', if_not_exists => TRUE)
                 """)
             except Exception as e:
-                logger.warning(f"Could not set compression policy: {e}")
-                
-            # Add retention policy - drop data older than 7 days
+                logger.warning(f"Could not set compression policy for realtime_prices: {e}")
+        
+            # Add continuous aggregate for 5-minute OHLCV
             try:
                 await conn.execute("""
-                    SELECT add_retention_policy('realtime_prices', 
-                                             INTERVAL '7 days',
-                                             if_not_exists => TRUE)
+                    CREATE MATERIALIZED VIEW IF NOT EXISTS realtime_to_intraday_5min
+                    WITH (timescaledb.continuous) AS
+                    SELECT
+                        time_bucket('5 minutes', timestamp) AS bucket,
+                        symbol,
+                        FIRST(price, timestamp) AS open,
+                        MAX(price) AS high,
+                        MIN(price) AS low,
+                        LAST(price, timestamp) AS close,
+                        SUM(volume) AS volume,
+                        COUNT(*) AS num_samples,
+                        'aggregator' AS source
+                    FROM realtime_prices
+                    GROUP BY bucket, symbol
+                    WITH NO DATA;
+
+                    SELECT add_continuous_aggregate_policy('realtime_to_intraday_5min',
+                        start_offset => INTERVAL '2 hours',
+                        end_offset => INTERVAL '10 minutes',
+                        schedule_interval => INTERVAL '5 minutes');
                 """)
             except Exception as e:
-                logger.warning(f"Could not set retention policy: {e}")
-
+                logger.warning(f"Could not create continuous aggregate for realtime_prices: {e}")
+                
     async def insert_realtime_price(self, symbol, price, timestamp, volume=0, source="unknown"):
         """Insert a real-time price into the database"""
         try:

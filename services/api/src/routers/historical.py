@@ -279,15 +279,9 @@ async def get_historical_analytics(
     conn = get_db_connection()
     
     try:
-        # Build dynamic column list
-        indicator_columns = ", ".join([f"indicators->>'{ind}' as {ind}" for ind in indicators if ind != "price"])
-        columns = f"symbol, timestamp, price"
-        if indicator_columns:
-            columns += f", {indicator_columns}"
-        
         # Build the base query
-        query = f"""
-        SELECT {columns}
+        query = """
+        SELECT symbol, timestamp, price, indicators
         FROM daily_analytics
         WHERE symbol = %s
         """
@@ -296,7 +290,7 @@ async def get_historical_analytics(
         # Add time filters
         if last_days:
             query += " AND timestamp > NOW() - interval '%s days'"
-            params.append(int(last_days * 1.4))  # Buffer for weekends
+            params.append(int(last_days * 1.4))  
         elif start_date and end_date:
             start_dt = parse_est_datetime(start_date)
             end_dt = parse_est_datetime(end_date, "23:59:59")
@@ -323,7 +317,6 @@ async def get_historical_analytics(
                     "message": f"No historical daily analytics found for {symbol}"
                 }
             
-            # Format the response
             result = []
             for row in rows:
                 row_dict = dict(row)
@@ -337,6 +330,20 @@ async def get_historical_analytics(
 
                 row_dict['timestamp_utc'] = ts_dt.isoformat()
                 row_dict['date_est'] = format_est_datetime(ts_dt).split(' ')[0]
+                
+                # Extract requested indicators from the JSONB
+                indicator_data = {}
+                if row_dict.get('indicators'):
+                    stored_indicators = row_dict['indicators']
+                    # Add requested indicators to the response
+                    for ind in indicators:
+                        if ind != 'price' and ind in stored_indicators:
+                            indicator_data[ind] = stored_indicators[ind]
+                
+                # Replace the indicators JSONB with extracted values
+                row_dict.pop('indicators', None)
+                row_dict.update(indicator_data)
+                
                 result.append(row_dict)
             
             metadata = {
@@ -367,15 +374,34 @@ async def get_last_historical_analytics(
     format: str = Query("json", description="Response format: json or csv")
 ):
     """Get the last N historical daily analytics records for a symbol."""
+    # Validate indicators
     allowed_indicators = [
-        "rsi_7", "rsi_14", "rsi_21", "macd", "macd_signal", "macd_hist",
-        "bb_upper", "bb_middle", "bb_lower", "bb_bandwidth", "bb_percent_b",
-        "sma_5", "sma_10", "sma_20", "sma_50", "sma_100", "sma_200",
-        "ema_9", "ema_12", "ema_26", "ema_50", "ema_200",
-        "atr_14", "stddev_20", "stoch_k", "stoch_d", "roc_10", "momentum_10",
-        "willr_14", "hist_vol_20", "keltner_upper", "keltner_lower", "price"
-    ]
-    
+    "bb_upper",
+    "bb_middle",
+    "bb_lower",
+    "bb_bandwidth",
+    "bb_percent_b",
+    "atr_14",
+    "atr_percent_14",
+    "stddev_20",
+    "keltner_upper",
+    "keltner_lower",
+    "hist_vol_20",
+    "rsi_14",
+    "macd",
+    "macd_signal",
+    "macd_hist",
+    "stoch_k",
+    "stoch_d",
+    "roc_10",
+    "momentum_10",
+    "willr_14",
+    "sma_20",
+    "sma_50",
+    "sma_200",
+    "ema_12",
+    "ema_26"]
+
     for indicator in indicators:
         if indicator not in allowed_indicators:
             raise HTTPException(
@@ -389,14 +415,9 @@ async def get_last_historical_analytics(
     conn = get_db_connection()
     
     try:
-        # Build dynamic column list
-        indicator_columns = ", ".join([f"indicators->>'{ind}' as {ind}" for ind in indicators if ind != "price"])
-        columns = f"symbol, timestamp, price"
-        if indicator_columns:
-            columns += f", {indicator_columns}"
-        
-        query = f"""
-        SELECT {columns}
+        # Get data with indicators JSONB field
+        query = """
+        SELECT symbol, timestamp, price, indicators
         FROM daily_analytics
         WHERE symbol = %s
         ORDER BY timestamp DESC
@@ -426,6 +447,20 @@ async def get_last_historical_analytics(
 
                 row_dict['timestamp_utc'] = ts_dt.isoformat()
                 row_dict['date_est'] = format_est_datetime(ts_dt).split(' ')[0]
+                
+                # Extract requested indicators from the JSONB
+                indicator_data = {}
+                if row_dict.get('indicators'):
+                    stored_indicators = row_dict['indicators']
+                    # Add requested indicators to the response
+                    for ind in indicators:
+                        if ind != 'price' and ind in stored_indicators:
+                            indicator_data[ind] = stored_indicators[ind]
+                
+                # Replace the indicators JSONB with extracted values
+                row_dict.pop('indicators', None)
+                row_dict.update(indicator_data)
+                
                 result.append(row_dict)
             
             metadata = {

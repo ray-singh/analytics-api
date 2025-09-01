@@ -246,13 +246,31 @@ async def get_intraday_analytics(
     
     # Validate indicators
     allowed_indicators = [
-        "rsi_7", "rsi_14", "rsi_21", "macd", "macd_signal", "macd_hist",
-        "bb_upper", "bb_middle", "bb_lower", "bb_bandwidth", "bb_percent_b",
-        "sma_5", "sma_10", "sma_20", "sma_50", "sma_100", "sma_200",
-        "ema_9", "ema_12", "ema_26", "ema_50", "ema_200",
-        "atr_14", "stddev_20", "stoch_k", "stoch_d", "roc_10", "momentum_10",
-        "willr_14", "price"
-    ]
+    "bb_upper",
+    "bb_middle",
+    "bb_lower",
+    "bb_bandwidth",
+    "bb_percent_b",
+    "atr_14",
+    "atr_percent_14",
+    "stddev_20",
+    "keltner_upper",
+    "keltner_lower",
+    "hist_vol_20",
+    "rsi_14",
+    "macd",
+    "macd_signal",
+    "macd_hist",
+    "stoch_k",
+    "stoch_d",
+    "roc_10",
+    "momentum_10",
+    "willr_14",
+    "sma_20",
+    "sma_50",
+    "sma_200",
+    "ema_12",
+    "ema_26"]
     
     for indicator in indicators:
         if indicator not in allowed_indicators:
@@ -261,22 +279,14 @@ async def get_intraday_analytics(
                 detail=f"Invalid indicator: {indicator}. Valid indicators: {allowed_indicators}"
             )
     
-    # Always include price and timestamp
     if "price" not in indicators:
         indicators.append("price")
     
     conn = get_db_connection()
     
     try:
-        # Build dynamic column list
-        indicator_columns = ", ".join([f"indicators->>'{ind}' as {ind}" for ind in indicators if ind != "price"])
-        columns = f"symbol, timestamp, price"
-        if indicator_columns:
-            columns += f", {indicator_columns}"
-        
-        # Build the base query
-        query = f"""
-        SELECT {columns}
+        query = """
+        SELECT symbol, timestamp, price, indicators
         FROM intraday_analytics
         WHERE symbol = %s AND interval_minutes = %s
         """
@@ -328,6 +338,20 @@ async def get_intraday_analytics(
                 row_dict = dict(row)
                 row_dict['timestamp_utc'] = row_dict['timestamp'].isoformat()
                 row_dict['timestamp_est'] = format_est_datetime(row_dict['timestamp'])
+                
+                # Extract requested indicators from the JSONB
+                indicator_data = {}
+                if row_dict.get('indicators'):
+                    stored_indicators = row_dict['indicators']
+                    # Add requested indicators to the response
+                    for ind in indicators:
+                        if ind != 'price' and ind in stored_indicators:
+                            indicator_data[ind] = stored_indicators[ind]
+                
+                # Replace the indicators JSONB with extracted values
+                row_dict.pop('indicators', None)
+                row_dict.update(indicator_data)
+                
                 result.append(row_dict)
             
             metadata = {
@@ -339,9 +363,6 @@ async def get_intraday_analytics(
                 "timezone_note": "timestamp_est is in America/New_York timezone (EST/EDT)"
             }
             return create_formatted_response(result, format, metadata, f"intraday_analytics_{symbol}_{interval}")
-
-    except HTTPException:
-        raise
     except Exception as e:
         logger.error(f"Error fetching intraday analytics: {e}")
         raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
@@ -432,13 +453,31 @@ async def get_last_intraday_analytics(
     
     # Validate indicators (reuse the same validation logic)
     allowed_indicators = [
-        "rsi_7", "rsi_14", "rsi_21", "macd", "macd_signal", "macd_hist",
-        "bb_upper", "bb_middle", "bb_lower", "bb_bandwidth", "bb_percent_b",
-        "sma_5", "sma_10", "sma_20", "sma_50", "sma_100", "sma_200",
-        "ema_9", "ema_12", "ema_26", "ema_50", "ema_200",
-        "atr_14", "stddev_20", "stoch_k", "stoch_d", "roc_10", "momentum_10",
-        "willr_14", "price"
-    ]
+    "bb_upper",
+    "bb_middle",
+    "bb_lower",
+    "bb_bandwidth",
+    "bb_percent_b",
+    "atr_14",
+    "atr_percent_14",
+    "stddev_20",
+    "keltner_upper",
+    "keltner_lower",
+    "hist_vol_20",
+    "rsi_14",
+    "macd",
+    "macd_signal",
+    "macd_hist",
+    "stoch_k",
+    "stoch_d",
+    "roc_10",
+    "momentum_10",
+    "willr_14",
+    "sma_20",
+    "sma_50",
+    "sma_200",
+    "ema_12",
+    "ema_26"]
     
     for indicator in indicators:
         if indicator not in allowed_indicators:
@@ -454,7 +493,7 @@ async def get_last_intraday_analytics(
     
     try:
         # Build dynamic column list
-        indicator_columns = ", ".join([f"indicators->>'{ind}' as {ind}" for ind in indicators if ind != "price"])
+        indicator_columns = ", ".join([ind for ind in indicators if ind != "price"])
         columns = f"symbol, timestamp, price"
         if indicator_columns:
             columns += f", {indicator_columns}"

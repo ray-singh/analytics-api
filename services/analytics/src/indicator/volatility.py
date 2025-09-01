@@ -2,6 +2,14 @@ import numpy as np
 import pandas as pd
 import talib
 
+def safe_float(value):
+    """Convert to float or None if NaN/Infinity"""
+    try:
+        value = float(value)
+        return None if np.isnan(value) or np.isinf(value) else value
+    except:
+        return None
+
 def calculate_volatility_indicators(df):
     """
     Calculate volatility-based technical indicators
@@ -28,16 +36,16 @@ def calculate_volatility_indicators(df):
             matype=0
         )
         
-        indicators['bb_upper'] = float(upper[-1])
-        indicators['bb_middle'] = float(middle[-1])
-        indicators['bb_lower'] = float(lower[-1])
+        indicators['bb_upper'] = safe_float(upper[-1])
+        indicators['bb_middle'] = safe_float(middle[-1])
+        indicators['bb_lower'] = safe_float(lower[-1])
         
         # Calculate bandwidth and %B
         bandwidth = (upper[-1] - lower[-1]) / middle[-1]
         percent_b = (close_prices[-1] - lower[-1]) / (upper[-1] - lower[-1]) if upper[-1] != lower[-1] else 0.5
         
-        indicators['bb_bandwidth'] = float(bandwidth)
-        indicators['bb_percent_b'] = float(percent_b)
+        indicators['bb_bandwidth'] = safe_float(bandwidth)
+        indicators['bb_percent_b'] = safe_float(percent_b)
     except Exception as e:
         print(f"Error calculating Bollinger Bands: {e}")
     
@@ -50,17 +58,17 @@ def calculate_volatility_indicators(df):
                 close_prices,
                 timeperiod=14
             )
-            indicators['atr_14'] = float(atr[-1])
+            indicators['atr_14'] = safe_float(atr[-1])
             
             # ATR percent (ATR relative to price)
-            indicators['atr_percent_14'] = float(atr[-1] / close_prices[-1] * 100) if close_prices[-1] > 0 else 0
+            indicators['atr_percent_14'] = safe_float(atr[-1] / close_prices[-1] * 100) if close_prices[-1] > 0 else 0
     except Exception as e:
         print(f"Error calculating ATR: {e}")
     
     # Standard Deviation
     try:
         stddev = talib.STDDEV(close_prices, timeperiod=20, nbdev=1)
-        indicators['stddev_20'] = float(stddev[-1])
+        indicators['stddev_20'] = safe_float(stddev[-1])
     except Exception as e:
         print(f"Error calculating Standard Deviation: {e}")
     
@@ -70,8 +78,8 @@ def calculate_volatility_indicators(df):
             keltner_upper = indicators['bb_middle'] + (2 * indicators['atr_14'])
             keltner_lower = indicators['bb_middle'] - (2 * indicators['atr_14'])
             
-            indicators['keltner_upper'] = float(keltner_upper)
-            indicators['keltner_lower'] = float(keltner_lower)
+            indicators['keltner_upper'] = safe_float(keltner_upper)
+            indicators['keltner_lower'] = safe_float(keltner_lower)
     except Exception as e:
         print(f"Error calculating Keltner Channels: {e}")
     
@@ -82,7 +90,7 @@ def calculate_volatility_indicators(df):
         if len(returns) >= 20:
             # Annualized volatility
             hist_vol = np.std(returns[-20:]) * np.sqrt(252) * 100
-            indicators['hist_vol_20'] = float(hist_vol)
+            indicators['hist_vol_20'] = safe_float(hist_vol)
     except Exception as e:
         print(f"Error calculating Historical Volatility: {e}")
     

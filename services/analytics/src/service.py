@@ -9,6 +9,7 @@ import services.analytics.src.indicator.momentum as momentum
 import services.analytics.src.indicator.volatility as volatility
 from services.analytics.src.indicator.realtime import calculate_real_time_indicators
 from prometheus_client import start_http_server, Counter, Histogram
+import numpy as np
 
 logging.basicConfig(
     level=logging.INFO,
@@ -120,6 +121,7 @@ async def process_ohlcv_bar(producer, event):
         
         # symbol + interval as key for partitioning
         key = f"{symbol}:{interval}".encode()
+        analytics_event = json_safe(analytics_event)
         await producer.send(OUTPUT_TOPIC, key=key, value=json.dumps(analytics_event).encode())
         
         logger.info(f"Published analytics for {symbol} {interval}min: RSI={indicators.get('rsi_14', 'N/A')}")
@@ -150,8 +152,6 @@ async def consume_ohlcv_bars():
         async for msg in consumer:
             try:
                 event = msg.value
-                
-                # Log the event for debugging
                 logger.debug(f"Received event: {event}")
                 
                 # Validate event structure (we need OHLC data and a timestamp field)
@@ -276,6 +276,26 @@ async def process_real_time_tick(producer, event, realtime_state):
                         value=json.dumps(analytics_event).encode())
     
     logger.debug(f"Published real-time analytics for {symbol}")
+
+def json_safe(obj):
+    """Make values JSON-serializable (handle NaN, Infinity, NumPy types)"""
+    if isinstance(obj, dict):
+        return {k: json_safe(v) for k, v in obj.items()}
+    elif isinstance(obj, (list, tuple)):
+        return [json_safe(item) for item in obj]
+    elif hasattr(obj, 'item'):  # NumPy scalars
+        try:
+            return obj.item()
+        except:
+            return None
+    elif isinstance(obj, (float, int)):
+        try:
+            if np.isnan(obj) or np.isinf(obj):
+                return None
+            return float(obj)
+        except:
+            return None
+    return obj
 
 async def main():
     """Main entry point for the analytics service"""

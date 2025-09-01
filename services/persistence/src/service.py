@@ -134,17 +134,25 @@ async def consume_analytics():
         async for msg in consumer:
             event = msg.value
             try:
-                # Determine if this is intraday or daily data
-                if event["interval_minutes"] < 1440:  # Less than a day
+                interval_minutes = event.get("interval_minutes")
+                if interval_minutes is None:
+                    logger.warning(f"Missing interval_minutes in analytics event: {event}")
+                    if "daily" in event.get("event_type", "").lower() or "day" in event.get("interval", "").lower():
+                        interval_minutes = 1440  # Assume daily
+                    else:
+                        interval_minutes = 5
+                    logger.info(f"Assumed interval_minutes={interval_minutes}")
+                
+                if interval_minutes < 1440:  # Less than a day
                     await analytics_repo.insert_intraday_analytics(
                         symbol=event["symbol"],
                         timestamp=event["timestamp"],
                         price=event["price"],
-                        interval_minutes=event["interval_minutes"],
+                        interval_minutes=interval_minutes,
                         indicators=event["indicators"]
                     )
                     RECORDS_STORED.labels(type="intraday_analytics").inc()
-                else:  # Daily data
+                else:  
                     await analytics_repo.insert_daily_analytics(
                         symbol=event["symbol"],
                         timestamp=event["timestamp"],

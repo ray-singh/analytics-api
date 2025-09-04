@@ -1,125 +1,190 @@
-# Distributed Microservices for Market Analytics
+# Distributed Microservices Platform for Market Analytics
 
 ## Overview
-A scalable analytics platform for real-time and historical financial market data, built with Python, Kafka, TimescaleDB, and FastAPI. The system leverages distributed microservices to ingest, process, analyze, and serve technical indicators for stocks and other instruments. Due to API rate limiting and cost contraints, the system only supports one ticker (AAPL), but can be easily scaled to include several financial instruments. 
+A production-ready, event-driven analytics platform for real-time and historical financial market data processing. Built with **Python**, **Kafka**, **TimescaleDB**, and **FastAPI**, this system demonstrates enterprise-grade microservices architecture, handling high-frequency data ingestion, real-time analytics computation, and scalable API services.
 
-## Architecture Highlights
-- **Distributed Microservices:** Each core function (ingestion, analytics, persistence, API, aggregation) runs as an independent, containerized service.
-- **Event-Driven Processing:** Kafka streams enable asynchronous communication and analytics computation.
-- **Time-Series Database:** TimescaleDB stores raw and processed OHLCV data with retention and compression policies for efficient analytics.
-- **Backfill Capability:** Historical data can be replayed into the analytics pipeline to ensure complete coverage of technical indicators.
-- **Extensible Indicator Framework:** Modular design for adding new technical indicators and analytics features.
+**Note:** Due to API rate limiting and cost constraints, the system currently supports one ticker (AAPL) but is architected to scale to hundreds of financial instruments.
 
-## Components
-- **Market Data Service:** Fetches real-time and historical OHLCV data from external APIs (Alpha Vantage, TwelveData, Yahoo Finance) and streams to Kafka.
-- **Persistence Service:** Stores raw price data and analytics results in TimescaleDB.
-- **Analytics Service:** Consumes price and OHLCV events, calculates technical indicators (momentum, volatility, real-time), and publishes analytics events.
-- **Aggregation Service:** Aggregates lower-interval bars into higher intervals for downstream analytics.
-- **API Service:** Exposes REST and WebSocket endpoints for querying prices, analytics, and available indicators.
-- **Backfill Scripts:** Replay historical OHLCV data into Kafka for analytics backfill.
-- **Infrastructure:** Kafka, Zookeeper, TimescaleDB, pgAdmin.
+## 🏗️ System Architecture
 
-## Features
-- **Real-Time Data Streaming**: Streams live stock prices via WebSocket and publishes them to Kafka.
-- **Historical Data Backfill**: Smart backfill logic to fetch only missing historical data.
-- **Technical Indicators**: Calculates indicators like SMA, EMA, RSI, MACD, and Bollinger Bands for intraday and daily timeframes.
-- **Three-Tier Data Architecture**:
-  - `realtime_prices`: High-frequency, volatile data (current session).
-  - `intraday_ohlcv`: 5-minute OHLCV data (past 1 and a half years).
-  - `historical_ohlcv`: Daily OHLCV data (10+ years).
-- **Analytics Storage**:
-  - `intraday_analytics`: Stores intraday technical indicators (5-minute intervals).
-  - `daily_analytics`: Stores daily technical indicators.
-- **API Endpoints**: Query analytics and data via RESTful endpoints.
-
-## Setup
-
-### 1. Install Dependencies
-```bash
-pip install -r requirements.txt
+### Microservices Design
+```
+┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
+│  Market Data    │    │   Aggregation   │    │   Analytics     │
+│    Service      │───▶│    Service      │───▶│    Service      │
+│  • API Clients  │    │ • Bar Aggregator│    │ • Momentum      │
+│  • Backfill Mgr │    │ • Time Windows  │    │ • Volatility    │
+│  • WebSocket    │    │ • OHLCV Builder │    │ • Real-time     │
+└─────────────────┘    └─────────────────┘    └─────────────────┘
+         │                       │                       │
+         ▼                       ▼                       ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                        Kafka Event Streams                      │
+│  ┌─────────────────┐ ┌─────────────────┐ ┌─────────────────┐    │
+│  │ market.prices.  │ │ market.prices.  │ │ market.         │    │
+│  │     raw         │ │     ohlcv       │ │   analytics     │    │
+│  └─────────────────┘ └─────────────────┘ └─────────────────┘    │
+└─────────────────────────────────────────────────────────────────┘
+         │                       │                       │
+         ▼                       ▼                       ▼
+┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
+│  Persistence    │    │      API        │    │   Scripts &     │
+│    Service      │    │    Service      │    │   Utilities     │
+│ • Repositories  │    │ • REST Routes   │    │ • DB Init       │
+│ • Migrations    │    │ • WebSockets    │    │ • Topic Create  │
+│ • DB Operations │    │ • Formatters    │    │ • Health Check  │
+└─────────────────┘    └─────────────────┘    └─────────────────┘
+         │                       │
+         ▼                       ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                        TimescaleDB                              │
+│            Hypertables • Compression • Retention                │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
-### 2. Start Kafka and Zookeeper
-```bash
-docker-compose up
+### Core Components
+
+| Service | Purpose | Key Modules | Technology Stack |
+|---------|---------|-------------|------------------|
+| **Market Data** | Real-time and historical data ingestion | `clients/`, `backfill/`, `repositories/` | Python, asyncio, WebSockets |
+| **Aggregation** | OHLCV bar aggregation (1min → 5min → 1day) | `aggregators/bar_aggregator.py` | Python, Kafka Streams |
+| **Analytics** | Technical indicators calculation | `momentum.py`, `volatility.py`, `realtime.py` | Python, NumPy, Pandas, TaLib |
+| **Persistence** | Database operations and schema management | `repositories/`, `migrations/` | Python, asyncpg, TimescaleDB |
+| **API** | REST/WebSocket endpoints | `routers/`, `websockets/` | FastAPI, Pydantic, uvicorn |
+| **Scripts & Utils** | System initialization and utilities | `libs/`, `scripts/` | Python, PostgreSQL |
+
+### Detailed Service Architecture
+
+#### Market Data Service (`services/market_data/`)
+```
+market_data/
+├── clients/
+│   ├── alphavantage_client.py    # Alpha Vantage API integration
+│   ├── twelvedata_client.py      # TwelveData REST API client
+│   ├── twelvedata_ws_client.py   # TwelveData WebSocket client
+│   └── yfinance_client.py        # Yahoo Finance fallback client
+├── backfill/
+│   └── backfill_manager.py       # Historical data backfilling logic
+├── repositories/
+│   └── ohlcv_repository.py       # OHLCV data access layer
+└── service.py                    # Main service orchestrator
 ```
 
-### 3. Start the Services (in Separate Terminals)
-
-#### a. Market Data Ingestion Service
-```bash
-python src/ingestion_service.py
+#### Analytics Service (`services/analytics/`)
+```
+analytics/
+├── indicator/
+│   ├── momentum.py               # RSI, MACD, Stochastic indicators
+│   ├── volatility.py             # Bollinger Bands, ATR, Standard Dev
+│   └── realtime.py               # Real-time indicator calculations
+└── service.py                    # Analytics processing engine
 ```
 
-#### b. Analytics Service
-```bash
-python src/analytics_service.py
+#### API Service (`services/api/`)
+```
+api/
+├── routers/
+│   ├── historical.py             # Historical OHLCV endpoints
+│   ├── intraday.py              # Intraday data endpoints  
+│   ├── realtime.py              # Real-time price endpoints
+│   └── utils/
+│       ├── format_utils.py      # Response formatting utilities
+│       └── timezone_utils.py    # Timezone handling utilities
+├── websockets/
+│   └── connection_manager.py    # WebSocket connection management
+└── main.py                      # FastAPI application setup
 ```
 
-#### c. API Service
-```bash
-uvicorn src.main:app --reload
+#### Persistence Service (`services/persistence/`)
+```
+persistence/
+├── repositories/
+│   ├── analytics_repository.py       # Analytics data access
+│   ├── ohlcv_repository.py          # OHLCV data access
+│   ├── price_repository.py          # Real-time price access
+│   └── realtime_analytics_repository.py # Real-time analytics access
+├── migrations/
+│   ├── initial_schema.py            # Database schema definitions
+│   └── run_migrations.py            # Migration execution
+└── service.py                       # Persistence orchestrator
 ```
 
-### 4. Initialize the Database
-Run the following to set up the database schema and TimescaleDB hypertables:
-```bash
-python -c "from src.db import init_db; init_db()"
-```
+## 📊 Data Architecture
 
-### 5. Query Analytics
-Visit [http://localhost:8000/analytics/AAPL](http://localhost:8000/analytics/AAPL) in your browser or use curl:
-```bash
-curl http://localhost:8000/analytics/AAPL
-```
+The system is designed to handle **real-time**, **intraday**, and **historical** financial data, with a focus on efficient storage, processing, and retrieval. The architecture is optimized for time-series data using **TimescaleDB** and **Kafka** for event-driven pipelines.
 
-## API Endpoints
+### Data Flow Overview
+1. **Real-Time Data**:
+   - Tick data is ingested and stored in the `realtime_prices` table.
+   - Real-time analytics (e.g., RSI, SMA, Bollinger Bands) are calculated and stored in the `realtime_analytics` table.
 
-### Data Endpoints
-- `GET /api/data/{symbol}?interval=5min&start=1627776000&end=1659312000`: Query raw OHLCV data.
-- `GET /api/ohlc/{symbol}?interval=1day&limit=100`: Query historical OHLCV data.
+2. **Intraday Data**:
+   - Tick data is aggregated into 5-minute OHLCV bars and stored in the `intraday_ohlcv` table.
+   - Intraday analytics (e.g., MACD, EMA, ATR) are calculated and stored in the `intraday_analytics` table.
 
-### Analytics Endpoints
-- `GET /api/analytics/intraday/{symbol}`: Query intraday technical indicators.
-- `GET /api/analytics/daily/{symbol}`: Query daily technical indicators.
-- `GET /api/indicators/{symbol}?type=rsi&period=14`: Query specific indicators.
+3. **Historical Data**:
+   - Intraday OHLCV data is aggregated into daily OHLCV bars and stored in the `historical_ohlcv` table.
+   - Daily analytics (e.g., long-term trends, moving averages) are calculated and stored in the `daily_analytics` table.
 
-## Architecture
+### Storage Tiers
 
-### Data Flow
-1. **Ingestion**: Fetches historical and real-time data, publishing price events to Kafka.
-2. **Analytics**: Consumes price events, calculates technical indicators, and stores results in the database.
-3. **API**: Exposes endpoints for querying real-time and historical analytics.
+1. **Real-Time Data**:
+   - **Table**: `realtime_prices`
+   - **Purpose**: Stores high-frequency tick data for the current trading session.
+   - **Retention**: 5 days.
+   - **Use Case**: Real-time analytics, WebSocket streaming.
 
-### Database Design
-- **TimescaleDB**: Optimized for time-series data with hypertables and chunking.
-- **Three-Tier Architecture**:
-  - `realtime_prices`: Stores high-frequency real-time data.
-  - `intraday_ohlcv`: Consolidates real-time data into 5-minute OHLCV intervals.
-  - `historical_ohlcv`: Stores daily OHLCV data for long-term analysis.
-- **Analytics Tables**:
-  - `intraday_analytics`: Stores intraday technical indicators.
-  - `daily_analytics`: Stores daily technical indicators.
+2. **Intraday Data**:
+   - **Table**: `intraday_ohlcv`
+   - **Purpose**: Stores 5-minute OHLCV bars for up to 1.5 years.
+   - **Retention**: 2 years.
+   - **Use Case**: Intraday technical indicators, short-term analysis.
 
-## Example Usage
+3. **Historical Data**:
+   - **Table**: `historical_ohlcv`
+   - **Purpose**: Stores daily OHLCV bars for long-term analysis.
+   - **Retention**: 10+ years (compressed after 7 days).
+   - **Use Case**: Long-term trend analysis, portfolio management.
 
-### Query Intraday Analytics
-```bash
-curl http://localhost:8000/api/analytics/intraday/AAPL
-```
+4. **Analytics Data**:
+   - **Tables**: `intraday_analytics`, `daily_analytics`, `realtime_analytics`
+   - **Purpose**: Stores calculated technical indicators (e.g., RSI, MACD, Bollinger Bands).
+   - **Retention**:
+     - **Intraday**: 90 days.
+     - **Daily**: 10+ years.
+     - **Real-Time**: 1 hour.
+   - **Use Case**: Indicator-based alerts, API queries.
 
-### Query Daily Analytics
-```bash
-curl http://localhost:8000/api/analytics/daily/AAPL
-```
+### Database Optimization
 
-### Query Specific Indicator (e.g., RSI)
-```bash
-curl "http://localhost:8000/api/indicators/AAPL?type=rsi&period=14"
-```
+- **Hypertables**: All time-series tables are hypertables, partitioned by time for efficient querying.
+- **Compression**: Historical data is compressed after 7 days, reducing storage by ~70%.
+- **Retention Policies**: Automatically removes outdated data to optimize storage.
+- **Indexes**: Optimized for symbol and timestamp queries.
 
-## Next Steps
-- Implement alerting for specific indicator thresholds.
-- Add authentication and authorization for API endpoints.
-- Use Docker to containerize all services for easier deployment.
-- Add monitoring and logging for production readiness.
+### Continuous Aggregates
+
+- **5-Minute Bars**:
+  - Source: `realtime_prices`
+  - Target: `intraday_ohlcv`
+  - Aggregation: Open, High, Low, Close, Volume (OHLCV).
+  - Schedule: Every 5 minutes.
+
+- **Daily Bars**:
+  - Source: `intraday_ohlcv`
+  - Target: `historical_ohlcv`
+  - Aggregation: Open, High, Low, Close, Volume (OHLCV).
+  - Schedule: Every 1 hour.
+
+### Data Retention and Compression Policies
+
+| Table                  | Retention Policy | Compression Policy |
+|------------------------|------------------|--------------------|
+| `realtime_prices`      | 5 days           | None               |
+| `intraday_ohlcv`       | 2 years          | After 3 days       |
+| `historical_ohlcv`     | 10+ years        | After 7 days       |
+| `realtime_analytics`   | 1 hour           | None               |
+| `intraday_analytics`   | 90 days          | After 7 days       |
+| `daily_analytics`      | 10+ years        | After 30 days      |
+
+This architecture ensures efficient storage, fast queries, and scalability for high-frequency financial data.

@@ -5,7 +5,7 @@ A production-ready, event-driven analytics platform for real-time and historical
 
 **Note:** Due to API rate limiting and cost constraints, the system currently supports one ticker (AAPL) but is architected to scale to hundreds of financial instruments.
 
-## 🏗️ System Architecture
+## System Architecture
 
 ### Microservices Design
 ```
@@ -109,7 +109,7 @@ persistence/
 └── service.py                       # Persistence orchestrator
 ```
 
-## 📊 Data Architecture
+## Data Architecture
 
 The system is designed to handle **real-time**, **intraday**, and **historical** financial data, with a focus on efficient storage, processing, and retrieval. The architecture is optimized for time-series data using **TimescaleDB** and **Kafka** for event-driven pipelines.
 
@@ -188,3 +188,125 @@ The system is designed to handle **real-time**, **intraday**, and **historical**
 | `daily_analytics`      | 10+ years        | After 30 days      |
 
 This architecture ensures efficient storage, fast queries, and scalability for high-frequency financial data.
+
+## Getting Started
+
+### Prerequisites
+- **Docker**: Ensure Docker is installed on your system. [Install Docker](https://docs.docker.com/get-docker/)
+- **Docker Compose**: Ensure Docker Compose is installed. [Install Docker Compose](https://docs.docker.com/compose/install/)
+- **Environment Variables**: Create a `.env` file in the root directory with the following variables:
+  ```env
+  DATABASE_URL=postgresql://postgres:password@localhost:5432/stockanalytics
+  KAFKA_BOOTSTRAP_SERVERS=localhost:9092
+  TWELVEDATA_API_KEY=your-twelvedata-api-key
+  ALPHA_VANTAGE_API_KEY=your-alpha-vantage-api-key
+  ```
+
+### Running the System with Docker
+
+1. **Clone the Repository**:
+   ```bash
+   git clone <repository-url>
+   cd analytics-api
+   ```
+
+2. **Build and Start the Services**:
+   Use Docker Compose to build and start all services:
+   ```bash
+   docker-compose up --build
+   ```
+
+3. **Verify Services**:
+   Check that all services are running in a seperate terminal:
+   ```bash
+   docker-compose ps
+   ```
+
+4. **Initialize the Database**:
+   Run the database initialization script to set up tables and hypertables:
+   ```bash
+    docker compose run --rm init-db python -m scripts.init_db
+   ```
+
+5. **Create Kafka Topics**:
+   Create the required Kafka topics:
+   ```bash
+   docker-compose exec api python -m scripts.create_topics
+   ```
+
+6. **Access the API**:
+   The API will be available at `http://localhost:8000`. You can test the health endpoint:
+   ```bash
+   curl http://localhost:8000/health
+   ```
+
+### Using the API
+
+#### **Health Check**
+- **Endpoint**: `GET /health`
+- **Description**: Check the health of the API and connected services.
+- **Example**:
+  ```bash
+  curl http://localhost:8000/health
+  ```
+
+#### **Real-Time Data**
+- **Endpoint**: `GET /api/v2/realtime/prices/{symbol}`
+- **Description**: Fetch real-time tick data for a specific stock symbol.
+- **Example**:
+  ```bash
+  curl "http://localhost:8000/api/v2/realtime/prices/AAPL?limit=100"
+  ```
+
+#### **Intraday Data**
+- **Endpoint**: `GET /api/v2/intraday/prices/{symbol}`
+- **Description**: Fetch intraday OHLCV data for a specific stock symbol.
+- **Example**:
+  ```bash
+  curl "http://localhost:8000/api/v2/intraday/prices/AAPL?interval=5min&limit=100"
+  ```
+
+#### **Historical Data**
+- **Endpoint**: `GET /api/v2/historical/prices/{symbol}`
+- **Description**: Fetch historical daily OHLCV data for a specific stock symbol.
+- **Example**:
+  ```bash
+  curl "http://localhost:8000/api/v2/historical/prices/AAPL?start_date=2023-01-01&end_date=2023-12-31"
+  ```
+
+#### **WebSocket for Real-Time Updates**
+- **Endpoint**: `ws://localhost:8000/ws/prices/{symbol}`
+- **Description**: Subscribe to real-time price updates for a specific stock symbol.
+- **Example** (using `wscat`):
+  ```bash
+  wscat -c ws://localhost:8000/ws/prices/AAPL
+  ```
+
+#### **WebSocket for Real-Time Analytics**
+- **Endpoint**: `ws://localhost:8000/ws/analytics/{symbol}`
+- **Description**: Subscribe to real-time analytics updates for a specific stock symbol.
+- **Example** (using `wscat`):
+  ```bash
+  wscat -c ws://localhost:8000/ws/analytics/AAPL
+  ```
+
+### Stopping the System
+To stop all running services:
+```bash
+docker-compose down
+```
+
+### Logs and Debugging
+To view logs for a specific service:
+```bash
+docker-compose logs <service-name>
+```
+For example:
+```bash
+docker-compose logs api
+```
+
+### Additional Notes
+- **Prometheus Metrics**: Metrics are available at `http://localhost:8000/metrics`.
+- **Swagger Documentation**: API documentation is available at `http://localhost:8000/docs`.
+- **Redoc Documentation**: Alternative API documentation is available at `http://localhost:8000/redoc`.
